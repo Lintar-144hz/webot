@@ -3,6 +3,7 @@ import { getBotState, connectWhatsApp, disconnectWhatsApp, clearSession } from "
 import { getStats } from "../utils/stats.js";
 import { logBuffer, clearLogs, addLog } from "../utils/logger.js";
 import { getUniqueCommands } from "../lib/commands.js";
+import { getTiktokProfile } from "../lib/tiktok.js";
 
 const router = express.Router();
 
@@ -73,6 +74,21 @@ router.get("/logs", (req, res) => {
 router.post("/logs/clear", (req, res) => {
   clearLogs();
   res.json({ success: true, message: "Log berhasil dibersihkan." });
+});
+
+// GET TikTok user profile
+router.get("/tiktok", async (req, res) => {
+  const { username } = req.query;
+  if (!username) {
+    return res.status(400).json({ error: "Username tidak boleh kosong." });
+  }
+
+  try {
+    const profile = await getTiktokProfile(username as string);
+    res.json(profile);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Terjadi kesalahan saat mengambil data." });
+  }
 });
 
 // POST restart bot

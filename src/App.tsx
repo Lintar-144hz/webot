@@ -1,24 +1,21 @@
 import React, { useState, useEffect, useRef } from "react";
 import { 
-  MessageSquare, 
   Terminal, 
-  Zap, 
-  Phone, 
-  Play, 
-  Square, 
-  RefreshCw, 
-  LogOut, 
   Cpu, 
   Database, 
-  ShieldAlert, 
   Clock, 
-  Code,
-  CheckCircle2,
+  HelpCircle, 
+  RefreshCw, 
+  LogOut, 
+  Zap, 
+  MessageSquare, 
+  CheckCircle2, 
   AlertCircle,
-  HelpCircle,
-  TrendingUp,
-  Download,
-  BookOpen,
+  Eye,
+  Sliders,
+  Sparkles,
+  Smartphone,
+  Send,
   Trash2
 } from "lucide-react";
 import { io } from "socket.io-client";
@@ -51,6 +48,13 @@ interface CommandInfo {
   usage: string;
 }
 
+interface TerminalLine {
+  text: string;
+  type: "input" | "output" | "error" | "success" | "info" | "system";
+}
+
+type TerminalTheme = "green" | "amber" | "monokai" | "cyberpunk";
+
 export default function App() {
   const [botState, setBotState] = useState<BotState>({
     status: "DISCONNECTED",
@@ -70,13 +74,25 @@ export default function App() {
     platform: "linux",
     nodeVersion: "v20"
   });
-  const [phoneInput, setPhoneInput] = useState("");
-  const [logs, setLogs] = useState<string[]>([]);
+  
   const [commands, setCommands] = useState<CommandInfo[]>([]);
+  const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ message: string; type: "success" | "error" | "info" } | null>(null);
   
+  // Termux Specific States
+  const [activeTab, setActiveTab] = useState<"bash" | "logs" | "localhost">("bash");
+  const [termTheme, setTermTheme] = useState<TerminalTheme>("green");
+  const [cmdInput, setCmdInput] = useState("");
+  const [terminalLines, setTerminalLines] = useState<TerminalLine[]>([]);
+  const [cmdHistory, setCmdHistory] = useState<string[]>([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [showMetricsPanel, setShowMetricsPanel] = useState(true);
+  const [lastTikTokResult, setLastTikTokResult] = useState<any | null>(null);
+
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const logsEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   // Show dynamic toast
   const showToast = (message: string, type: "success" | "error" | "info" = "info") => {
@@ -85,6 +101,26 @@ export default function App() {
       setToast(null);
     }, 4000);
   };
+
+  // Add line helper
+  const addTermLine = (text: string, type: TerminalLine["type"] = "output") => {
+    setTerminalLines(prev => [...prev, { text, type }]);
+  };
+
+  // Initialize Terminal Welcome Banner
+  useEffect(() => {
+    const timeStr = new Date().toLocaleString("id-ID", { hour12: false });
+    
+    setTerminalLines([
+      { text: "Welcome to Termux (Web-based Console v1.2.0)!", type: "info" },
+      { text: "Type 'help' or 'menu' to see all special control commands.", type: "system" },
+      { text: `System startup: ${timeStr}`, type: "info" },
+      { text: "Subscribed repositories: stable-main (apt), baileys-os (git)", type: "info" },
+      { text: "------------------------------------------------------", type: "info" },
+      { text: "💡 KETIK 'localhost' UNTUK PENJELASAN LOCALHOST/PORT", type: "system" },
+      { text: "------------------------------------------------------", type: "info" }
+    ]);
+  }, []);
 
   useEffect(() => {
     // 1. Initial Data Load
@@ -116,11 +152,27 @@ export default function App() {
       setBotState(newState);
       if (newState.status === "CONNECTED") {
         showToast("WhatsApp Berhasil Terhubung!", "success");
+        setTerminalLines(prev => [
+          ...prev, 
+          { text: `[BOT] WhatsApp successfully CONNECTED to session!`, type: "success" }
+        ]);
+      } else if (newState.status === "DISCONNECTED") {
+        setTerminalLines(prev => [
+          ...prev, 
+          { text: `[BOT] WhatsApp DISCONNECTED. Use 'connect <phone>' to connect.`, type: "error" }
+        ]);
       }
     });
 
     socket.on("new-log", (newLog: string) => {
       setLogs(prev => [...prev.slice(-199), newLog]);
+      
+      // Highlight log alerts inside terminal
+      if (newLog.includes("[ERROR]")) {
+        setTerminalLines(prev => [...prev, { text: `[SYSTEM LOG ERROR] ${newLog}`, type: "error" }]);
+      } else if (newLog.includes("[SUCCESS]")) {
+        setTerminalLines(prev => [...prev, { text: `[SYSTEM LOG SUCCESS] ${newLog}`, type: "success" }]);
+      }
     });
 
     socket.on("logs-cleared", () => {
@@ -142,28 +194,30 @@ export default function App() {
     };
   }, []);
 
-  // Auto scroll terminal log to bottom
+  // Auto scroll terminal to bottom
   useEffect(() => {
     if (terminalEndRef.current) {
       terminalEndRef.current.scrollIntoView({ behavior: "smooth" });
     }
-  }, [logs]);
+  }, [terminalLines, activeTab]);
+
+  // Auto scroll logs to bottom
+  useEffect(() => {
+    if (logsEndRef.current && activeTab === "logs") {
+      logsEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [logs, activeTab]);
 
   // Handle WhatsApp Connection via Pairing Code
-  const handleConnect = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!phoneInput) {
-      showToast("Silakan masukkan nomor WhatsApp Anda.", "error");
-      return;
-    }
-    
-    // Simple verification
-    let formatted = phoneInput.replace(/[^0-9]/g, "");
+  const triggerConnect = async (phone: string) => {
+    let formatted = phone.replace(/[^0-9]/g, "");
     if (!formatted.startsWith("62") && formatted.startsWith("0")) {
       formatted = "62" + formatted.slice(1);
     }
     
-    showToast(`Memproses pairing code untuk ${formatted}...`, "info");
+    addTermLine(`[PROCESS] Mengirim permintaan pairing code untuk +${formatted}...`, "info");
+    showToast(`Memproses pairing code untuk +${formatted}...`, "info");
+    
     try {
       const res = await fetch("/api/connect", {
         method: "POST",
@@ -172,433 +226,882 @@ export default function App() {
       }).then(r => r.json());
 
       if (res.error) {
+        addTermLine(`[ERROR] Gagal: ${res.error}`, "error");
         showToast(res.error, "error");
       } else {
+        addTermLine(`[SUCCESS] Permintaan berhasil! Gunakan pairing code di bawah ini.`, "success");
         showToast("Minta Pairing Code berhasil!", "success");
       }
     } catch (err) {
+      addTermLine(`[ERROR] Gagal melakukan permintaan Pairing Code ke server.`, "error");
       showToast("Gagal melakukan permintaan Pairing Code.", "error");
     }
   };
 
   // Handle Disconnect
-  const handleDisconnect = async () => {
-    if (!confirm("Apakah Anda yakin ingin memutuskan koneksi WhatsApp?")) return;
+  const triggerDisconnect = async () => {
+    addTermLine(`[PROCESS] Memutuskan koneksi WhatsApp...`, "info");
     try {
       const res = await fetch("/api/disconnect", { method: "POST" }).then(r => r.json());
       if (res.error) {
+        addTermLine(`[ERROR] Gagal: ${res.error}`, "error");
         showToast(res.error, "error");
       } else {
+        addTermLine(`[SUCCESS] Koneksi WhatsApp berhasil diputuskan.`, "success");
         showToast("WhatsApp berhasil diputuskan.", "success");
       }
     } catch (err) {
+      addTermLine(`[ERROR] Kegagalan jaringan atau server.`, "error");
       showToast("Gagal memutuskan koneksi WhatsApp.", "error");
     }
   };
 
   // Handle Logout (Clear Session)
-  const handleLogout = async () => {
-    if (!confirm("Apakah Anda yakin ingin logout? Ini akan menghapus seluruh data session dan Anda harus memasukkan Pairing Code kembali.")) return;
+  const triggerLogout = async () => {
+    addTermLine(`[PROCESS] Menghapus session WhatsApp...`, "info");
     try {
       const res = await fetch("/api/logout", { method: "POST" }).then(r => r.json());
       if (res.error) {
+        addTermLine(`[ERROR] Gagal: ${res.error}`, "error");
         showToast(res.error, "error");
       } else {
+        addTermLine(`[SUCCESS] Session berhasil dihapus. Silakan request code baru.`, "success");
         showToast("Berhasil logout dan menghapus session.", "success");
         setBotState({ status: "DISCONNECTED", phoneNumber: "", pairingCode: null });
       }
     } catch (err) {
+      addTermLine(`[ERROR] Kegagalan jaringan atau server saat logout.`, "error");
       showToast("Gagal logout.", "error");
     }
   };
 
   // Handle Restart Bot
-  const handleRestart = async () => {
+  const triggerRestart = async () => {
+    addTermLine(`[PROCESS] Meminta server me-restart WhatsApp engine...`, "info");
     try {
       showToast("Sedang merestart bot...", "info");
       const res = await fetch("/api/restart", { method: "POST" }).then(r => r.json());
       if (res.error) {
+        addTermLine(`[ERROR] Gagal restart: ${res.error}`, "error");
         showToast(res.error, "error");
       } else {
+        addTermLine(`[SUCCESS] Bot berhasil direstart. Menunggu inisialisasi ulang...`, "success");
         showToast("Bot berhasil direstart.", "success");
       }
     } catch (err) {
+      addTermLine(`[ERROR] Gagal merestart bot.`, "error");
       showToast("Gagal merestart bot.", "error");
     }
   };
 
   // Handle Clear Logs
-  const handleClearLogs = async () => {
+  const triggerClearLogs = async () => {
     try {
       await fetch("/api/logs/clear", { method: "POST" });
     } catch (err) {}
   };
 
+  // Process entered terminal command
+  const processCommand = async (inputStr: string) => {
+    const cleanInput = inputStr.trim();
+    if (!cleanInput) return;
+
+    // Add input line to display
+    setTerminalLines(prev => [...prev, { text: `~/baileys-os $ ${cleanInput}`, type: "input" }]);
+    
+    // Add to history
+    const newHistory = [cleanInput, ...cmdHistory.filter(h => h !== cleanInput)].slice(0, 50);
+    setCmdHistory(newHistory);
+    setHistoryIndex(-1);
+
+    const parts = cleanInput.split(/\s+/);
+    const cmd = parts[0].toLowerCase();
+    const args = parts.slice(1);
+
+    switch (cmd) {
+      case "help":
+      case "menu":
+        addTermLine("====================================================", "info");
+        addTermLine("             DAFTAR PERINTAH TERMUX WEB             ", "success");
+        addTermLine("====================================================", "info");
+        addTermLine("help, menu      - Menampilkan panduan bantuan ini", "info");
+        addTermLine("status          - Status koneksi WhatsApp Bot & nomor terhubung", "info");
+        addTermLine("stats           - Tampilkan statistik RAM, CPU, dan Uptime server", "info");
+        addTermLine("neofetch        - Info spesifikasi server dibalut ASCII Art", "info");
+        addTermLine("commands        - Tampilkan menu perintah Bot WhatsApp", "info");
+        addTermLine("connect <no>    - Menghubungkan bot dengan No WhatsApp (contoh: connect 081234567)", "info");
+        addTermLine("disconnect      - Putuskan sambungan WhatsApp aktif saat ini", "info");
+        addTermLine("logout          - Keluar dan hapus seluruh session tersimpan", "info");
+        addTermLine("restart         - Restart ulang client daemon WhatsApp", "info");
+        addTermLine("tt <username>   - Cari profil TikTok secara real-time", "success");
+        addTermLine("localhost       - Penjelasan tentang localhost & port-forwarding", "success");
+        addTermLine("theme <color>   - Ganti warna tema (green, amber, monokai, cyberpunk)", "info");
+        addTermLine("clear           - Bersihkan baris terminal ini", "info");
+        addTermLine("====================================================", "info");
+        break;
+
+      case "localhost":
+      case "local":
+        addTermLine("┌────────────────────────────────────────────────────────┐", "success");
+        addTermLine("│             INFO LOCALHOST & CLOUD CONTAINER           │", "success");
+        addTermLine("├────────────────────────────────────────────────────────┤", "info");
+        addTermLine("│  ❓ KENAPA TIDAK MUNCUL LOCALHOST?                     │", "info");
+        addTermLine("│  Aplikasi ini berjalan di cloud container Google Cloud │", "info");
+        addTermLine("│  Run secara remote, bukan di PC lokal fisik Anda.       │", "info");
+        addTermLine("│                                                        │", "info");
+        addTermLine("│  🔗 AKSES WEB:                                         │", "info");
+        addTermLine("│  Aplikasi dapat diakses via link browser aktif Anda:   │", "info");
+        addTermLine(`│  ${window.location.origin} │`, "success");
+        addTermLine("│                                                        │", "info");
+        addTermLine("│  💻 CARA MENJALANKAN DI PC / LOCALHOST SENDIRI:        │", "info");
+        addTermLine("│  1. Download file project ZIP (Menu kanan atas)        │", "info");
+        addTermLine("│  2. Ekstrak di komputer Anda                           │", "info");
+        addTermLine("│  3. Buka terminal local Anda, ketik:                   │", "info");
+        addTermLine("│     $ npm install                                      │", "info");
+        addTermLine("│     $ npm run dev                                      │", "info");
+        addTermLine("│  4. Sekarang web akan muncul di http://localhost:3000  │", "success");
+        addTermLine("└────────────────────────────────────────────────────────┘", "success");
+        break;
+
+      case "status":
+        const st = botState.status;
+        const colorMark = st === "CONNECTED" ? "CONNECTED [ONLINE]" : st === "CONNECTING" ? "CONNECTING..." : "DISCONNECTED [OFFLINE]";
+        addTermLine("┌──────────────────────────────────────────────┐", "info");
+        addTermLine("│               WHATSAPP STATUS                │", "info");
+        addTermLine("├──────────────────────────────────────────────┤", "info");
+        addTermLine(`│ Status Bot   : ${colorMark}`, st === "CONNECTED" ? "success" : st === "CONNECTING" ? "info" : "error");
+        addTermLine(`│ No Terhubung : ${botState.phoneNumber ? "+" + botState.phoneNumber : "Belum ada"}`, "info");
+        addTermLine(`│ Pairing Code : ${botState.pairingCode || "Tidak ada aktif"}`, "success");
+        addTermLine("└──────────────────────────────────────────────┘", "info");
+        if (!botState.phoneNumber && st !== "CONNECTED") {
+          addTermLine("💡 Ketik 'connect <nomor_hp>' untuk menghasilkan pairing code baru.", "success");
+        }
+        break;
+
+      case "stats":
+        addTermLine("┌──────────────────────────────────────────────┐", "info");
+        addTermLine("│               SYSTEM STATS                   │", "info");
+        addTermLine("├──────────────────────────────────────────────┤", "info");
+        addTermLine(`│ Server Uptime: ${stats.uptime}`, "info");
+        addTermLine(`│ RAM Usage    : ${stats.ramUsed} (${stats.ramPercent}%)`, "info");
+        addTermLine(`│ CPU Usage    : ${stats.cpuPercent}%`, "info");
+        addTermLine(`│ Total Users  : ${stats.totalUsers}`, "info");
+        addTermLine(`│ Total Msg    : ${stats.totalMessages}`, "info");
+        addTermLine(`│ Total Cmds   : ${stats.totalCommands}`, "info");
+        addTermLine(`│ OS Platform  : ${stats.platform}`, "info");
+        addTermLine(`│ Node Version : ${stats.nodeVersion}`, "info");
+        addTermLine("└──────────────────────────────────────────────┘", "info");
+        break;
+
+      case "neofetch":
+        let logoColor: TerminalLine["type"] = "success";
+        if (termTheme === "amber") logoColor = "info";
+        else if (termTheme === "cyberpunk") logoColor = "error";
+
+        addTermLine("       .---.       tarzz@baileys-terminal", logoColor);
+        addTermLine("      /     \\      ----------------------", logoColor);
+        addTermLine("      \\_.._./      OS: Termux (Web Container)", logoColor);
+        addTermLine("      /  _  \\      Kernel: BaileysOS v1.0.0-stable", logoColor);
+        addTermLine(`     (  |_|  )     Uptime: ${stats.uptime}`, logoColor);
+        addTermLine("     //  _  \\\\     Shell: bash / node-terminal", logoColor);
+        addTermLine(`    //  |_|  \\\\    Memory: ${stats.ramUsed} / ${stats.totalRam}`, logoColor);
+        addTermLine(`    \\__________/   WhatsApp Status: ${botState.status}`, logoColor);
+        addTermLine(`                   Uptime MS: ${stats.uptimeMs} ms`, logoColor);
+        break;
+
+      case "commands":
+        addTermLine("=== DAFTAR PERINTAH BOT WHATSAPP ===", "success");
+        if (commands.length === 0) {
+          addTermLine("Tidak ada perintah WhatsApp yang terdaftar.", "info");
+        } else {
+          commands.forEach(cmd => {
+            addTermLine(`• .${cmd.name} [Category: ${cmd.category}] - ${cmd.description} (Usage: ${cmd.usage})`, "info");
+          });
+        }
+        break;
+
+      case "connect":
+        if (args.length === 0) {
+          addTermLine("❌ Error: Harap masukkan nomor WhatsApp. Contoh: connect 62812345678", "error");
+        } else {
+          await triggerConnect(args[0]);
+        }
+        break;
+
+      case "disconnect":
+        await triggerDisconnect();
+        break;
+
+      case "logout":
+        await triggerLogout();
+        break;
+
+      case "restart":
+        await triggerRestart();
+        break;
+
+      case "clear":
+        setTerminalLines([]);
+        break;
+
+      case "theme":
+        if (args.length === 0) {
+          addTermLine("❌ Masukkan pilihan warna: green, amber, monokai, cyberpunk", "error");
+        } else {
+          const targetTheme = args[0].toLowerCase();
+          if (["green", "amber", "monokai", "cyberpunk"].includes(targetTheme)) {
+            setTermTheme(targetTheme as TerminalTheme);
+            addTermLine(`[SUCCESS] Tema diubah ke: ${targetTheme}`, "success");
+          } else {
+            addTermLine(`❌ Tema tidak dikenal: ${targetTheme}. Pilih: green, amber, monokai, atau cyberpunk.`, "error");
+          }
+        }
+        break;
+
+      case "tt":
+      case "tiktok":
+        if (args.length === 0) {
+          addTermLine("❌ Masukkan username TikTok. Contoh: tt khaby.lame", "error");
+        } else {
+          let user = args[0].trim();
+          if (user.startsWith("@")) user = user.substring(1);
+          
+          addTermLine(`⏳ Sedang mencari data TikTok untuk @${user}...`, "info");
+          try {
+            const profile = await fetch(`/api/tiktok?username=${encodeURIComponent(user)}`).then(async r => {
+              if (!r.ok) {
+                const errJson = await r.json();
+                throw new Error(errJson.error || "Gagal mengambil data.");
+              }
+              return r.json();
+            });
+
+            setLastTikTokResult(profile);
+            
+            addTermLine("┌──────────────────────────────────────────────┐", "success");
+            addTermLine("│          TIKTOK PROFILE INFORMATION          │", "success");
+            addTermLine("├──────────────────────────────────────────────┤", "info");
+            addTermLine(`│  👤 Nama          : ${profile.name}`, "info");
+            addTermLine(`│  🆔 Username      : @${profile.username}`, "info");
+            addTermLine(`│  📝 Bio           : ${profile.bio}`, "info");
+            addTermLine(`│  👥 Followers     : ${profile.followers}`, "info");
+            addTermLine(`│  ➡️ Following     : ${profile.following}`, "info");
+            addTermLine(`│  ❤️ Total Likes   : ${profile.likes}`, "info");
+            addTermLine(`│  🎬 Total Video   : ${profile.videos}`, "info");
+            addTermLine(`│  ✅ Verified      : ${profile.verified}`, "info");
+            addTermLine(`│  🔒 Private/Public: ${profile.isPrivate}`, "info");
+            addTermLine(`│  🌍 Region        : ${profile.region}`, "info");
+            addTermLine("└──────────────────────────────────────────────┘", "success");
+            addTermLine(`[SUCCESS] Profil @${profile.username} berhasil dimuat di bawah!`, "success");
+          } catch (err: any) {
+            addTermLine(`❌ Gagal: ${err.message || "Username tidak ditemukan atau gangguan server."}`, "error");
+          }
+        }
+        break;
+
+      default:
+        addTermLine(`bash: command not found: ${cmd}. Ketik 'help' untuk daftar perintah.`, "error");
+        break;
+    }
+  };
+
+  const handleCommandSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!cmdInput.trim()) return;
+    processCommand(cmdInput);
+    setCmdInput("");
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      if (cmdHistory.length > 0) {
+        const nextIndex = historyIndex + 1;
+        if (nextIndex < cmdHistory.length) {
+          setHistoryIndex(nextIndex);
+          setCmdInput(cmdHistory[nextIndex]);
+        }
+      }
+    } else if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const nextIndex = historyIndex - 1;
+      if (nextIndex >= 0) {
+        setHistoryIndex(nextIndex);
+        setCmdInput(cmdHistory[nextIndex]);
+      } else {
+        setHistoryIndex(-1);
+        setCmdInput("");
+      }
+    } else if (e.key === "Tab") {
+      e.preventDefault();
+      // Auto-complete commands
+      const currentWord = cmdInput.trim().toLowerCase();
+      const availableCmds = ["help", "menu", "status", "stats", "neofetch", "connect", "disconnect", "logout", "restart", "clear", "theme", "tt", "localhost"];
+      const match = availableCmds.find(c => c.startsWith(currentWord));
+      if (match) {
+        setCmdInput(match + " ");
+      }
+    }
+  };
+
+  // Keyboard shortcut clicked
+  const handleShortcutClick = (shortcut: string) => {
+    if (shortcut === "UP") {
+      if (cmdHistory.length > 0) {
+        const nextIndex = historyIndex + 1;
+        if (nextIndex < cmdHistory.length) {
+          setHistoryIndex(nextIndex);
+          setCmdInput(cmdHistory[nextIndex]);
+        }
+      }
+    } else if (shortcut === "DOWN") {
+      const nextIndex = historyIndex - 1;
+      if (nextIndex >= 0) {
+        setHistoryIndex(nextIndex);
+        setCmdInput(cmdHistory[nextIndex]);
+      } else {
+        setHistoryIndex(-1);
+        setCmdInput("");
+      }
+    } else if (shortcut === "TAB") {
+      const currentWord = cmdInput.trim().toLowerCase();
+      const availableCmds = ["help", "menu", "status", "stats", "neofetch", "connect", "disconnect", "logout", "restart", "clear", "theme", "tt", "localhost"];
+      const match = availableCmds.find(c => c.startsWith(currentWord));
+      if (match) {
+        setCmdInput(match + " ");
+      }
+    } else if (shortcut === "CLEAR") {
+      setTerminalLines([]);
+    } else if (shortcut === "HELP") {
+      processCommand("help");
+    } else if (shortcut === "NEOFETCH") {
+      processCommand("neofetch");
+    } else if (shortcut === "LOCALHOST") {
+      processCommand("localhost");
+    }
+  };
+
+  // Focus terminal input
+  const focusTerminal = () => {
+    if (inputRef.current) {
+      inputRef.current.focus();
+    }
+  };
+
+  // Get active theme colors
+  const getThemeClasses = () => {
+    switch (termTheme) {
+      case "amber":
+        return {
+          bg: "bg-[#0b0702]",
+          text: "text-amber-500",
+          border: "border-amber-950/70",
+          textMuted: "text-amber-700",
+          inputBg: "bg-[#181005]",
+          accent: "text-amber-400",
+          badge: "bg-amber-500/10 text-amber-400 border-amber-500/20",
+          scrollbar: "scrollbar-amber"
+        };
+      case "monokai":
+        return {
+          bg: "bg-[#1e1e1e]",
+          text: "text-zinc-100",
+          border: "border-zinc-800",
+          textMuted: "text-zinc-500",
+          inputBg: "bg-[#252525]",
+          accent: "text-yellow-400",
+          badge: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
+          scrollbar: "scrollbar-zinc"
+        };
+      case "cyberpunk":
+        return {
+          bg: "bg-[#08010f]",
+          text: "text-cyan-400",
+          border: "border-fuchsia-950/80",
+          textMuted: "text-fuchsia-700/80",
+          inputBg: "bg-[#140224]",
+          accent: "text-fuchsia-400",
+          badge: "bg-fuchsia-500/20 text-fuchsia-400 border-fuchsia-500/30",
+          scrollbar: "scrollbar-cyber"
+        };
+      default: // green
+        return {
+          bg: "bg-[#020403]",
+          text: "text-emerald-400",
+          border: "border-emerald-950/70",
+          textMuted: "text-emerald-900/80",
+          inputBg: "bg-[#060b08]",
+          accent: "text-emerald-300",
+          badge: "bg-emerald-500/10 text-emerald-400 border-emerald-500/20",
+          scrollbar: "scrollbar-emerald"
+        };
+    }
+  };
+
+  const th = getThemeClasses();
+
   if (loading) {
     return (
-      <div className="min-h-screen bg-[#0b0f19] flex flex-col items-center justify-center text-white">
+      <div className="min-h-screen bg-[#050505] flex flex-col items-center justify-center text-emerald-400 font-mono">
         <div className="flex flex-col items-center gap-4">
           <div className="relative">
-            <div className="w-16 h-16 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin"></div>
+            <div className="w-16 h-16 border-4 border-emerald-500/10 border-t-emerald-400 rounded-full animate-spin"></div>
             <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2">
-              <MessageSquare className="w-6 h-6 text-emerald-400" />
+              <Terminal className="w-6 h-6 text-emerald-400 animate-pulse" />
             </div>
           </div>
-          <h1 className="text-xl font-semibold tracking-tight">TarzzBot Dashboard</h1>
-          <p className="text-sm text-gray-400 animate-pulse">Menghubungkan ke server backend...</p>
+          <h1 className="text-xl font-bold tracking-tight">TERMUX_DAEMON_BOOTING</h1>
+          <p className="text-xs text-emerald-600 animate-pulse">Initializing socket loop & Baileys hooks...</p>
         </div>
       </div>
     );
   }
 
-  // Get status badge styling
-  const getStatusBadge = () => {
-    switch (botState.status) {
-      case "CONNECTED":
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-            Connected
-          </span>
-        );
-      case "CONNECTING":
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
-            <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping"></span>
-            Connecting
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
-            <span className="w-2 h-2 rounded-full bg-red-500"></span>
-            Disconnected
-          </span>
-        );
-    }
-  };
-
   return (
-    <div className="flex h-screen w-full bg-[#09090b] text-zinc-100 font-sans overflow-hidden">
+    <div className={`flex h-screen w-full ${th.bg} ${th.text} font-mono overflow-hidden transition-all duration-300`}>
       
-      {/* Sidebar aside */}
-      <aside className="w-64 border-r border-zinc-800/50 flex flex-col bg-[#0c0c0e] shrink-0 hidden md:flex">
-        <div className="p-6 flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500 flex items-center justify-center shadow-lg shadow-emerald-500/20">
-            <MessageSquare className="w-5 h-5 text-black" />
-          </div>
-          <span className="font-bold tracking-tight text-xl text-white">
-            Baileys<span className="text-emerald-500">OS</span>
-          </span>
+      {/* Toast Notification */}
+      {toast && (
+        <div className="fixed top-4 right-4 z-50 flex items-center gap-3 px-4 py-2.5 rounded-lg shadow-xl border text-xs max-w-sm transition-all duration-300 animate-slide-in bg-zinc-950 border-emerald-900/50 text-emerald-300">
+          {toast.type === "success" && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
+          {toast.type === "error" && <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />}
+          {toast.type === "info" && <HelpCircle className="w-4 h-4 text-sky-400 shrink-0" />}
+          <span className="font-semibold">{toast.message}</span>
         </div>
-        
-        <nav className="flex-1 px-4 py-2 space-y-1">
-          <div className="text-[10px] uppercase tracking-widest text-zinc-500 font-semibold px-2 mb-2">Control Panel</div>
-          <a href="#" className="flex items-center gap-3 px-3 py-2.5 bg-zinc-800/50 rounded-lg text-emerald-400 font-medium text-xs transition-all">
-            <Zap className="w-4 h-4 text-emerald-400" />
-            Dashboard
-          </a>
-          <a href="#commands" className="flex items-center gap-3 px-3 py-2.5 hover:bg-zinc-800/30 rounded-lg text-zinc-400 font-medium text-xs transition-all">
-            <Code className="w-4 h-4 text-zinc-500" />
-            Commands List
-          </a>
-        </nav>
-        
-        <div className="p-4 mt-auto border-t border-zinc-800/50">
-          <div className="bg-zinc-900/50 rounded-xl p-3 flex items-center gap-3 border border-zinc-800/30">
-            <div className="w-8 h-8 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-zinc-400 text-xs font-bold font-mono">
-              TZ
-            </div>
-            <div>
-              <div className="text-xs font-semibold text-white">Tarzz Owner</div>
-              <div className="text-[10px] text-zinc-500">v1.0.0-stable</div>
-            </div>
-          </div>
-        </div>
-      </aside>
+      )}
 
-      {/* Main Panel */}
-      <main className="flex-1 flex flex-col min-w-0 bg-[#09090b] overflow-y-auto">
+      {/* Main Container */}
+      <div className="flex-1 flex flex-col min-w-0 h-full relative">
         
-        {/* Header */}
-        <header className="h-16 border-b border-zinc-800/50 flex items-center justify-between px-6 sm:px-8 bg-[#09090b] shrink-0">
+        {/* Device Simulated Status Bar */}
+        <div className={`h-8 ${th.bg} border-b ${th.border} flex items-center justify-between px-4 text-[10px] ${th.textMuted} shrink-0 select-none`}>
+          <div className="flex items-center gap-3">
+            <span className="flex items-center gap-1 font-bold">
+              <Smartphone className="w-3.5 h-3.5 text-emerald-500" />
+              TERMUX v1.20
+            </span>
+            <span className="hidden sm:inline">Session: #1 (bash)</span>
+          </div>
+          
           <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-bold md:hidden text-white flex items-center gap-1.5 mr-2">
-                <MessageSquare className="w-4 h-4 text-emerald-400" />
-                BaileysOS
-              </span>
-            </div>
-            {/* Live connection badge */}
-            <div className="flex items-center gap-2 px-3 py-1 bg-emerald-500/5 border border-emerald-500/20 rounded-full">
-              <div className={`w-2 h-2 rounded-full ${botState.status === "CONNECTED" ? "bg-emerald-500 animate-pulse" : botState.status === "CONNECTING" ? "bg-amber-500 animate-ping" : "bg-red-500"}`} />
-              <span className="text-[11px] font-medium text-emerald-400 font-mono capitalize">
-                System: {botState.status.toLowerCase()}
-              </span>
-            </div>
-            
-            {botState.phoneNumber && (
-              <>
-                <div className="h-4 w-px bg-zinc-800 hidden sm:block"></div>
-                <span className="text-xs text-zinc-400 hidden sm:inline">
-                  Session: <span className="text-zinc-100 font-mono">+{botState.phoneNumber}</span>
-                </span>
-              </>
-            )}
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              {new Date().toISOString().split("T")[1].slice(0, 8)} UTC
+            </span>
+            <span className="hidden xs:inline">IP: 127.0.0.1 (cloud)</span>
+            <span className="flex items-center gap-1 px-1.5 py-0.5 bg-emerald-950/40 text-emerald-400 border border-emerald-900/30 rounded">
+              <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-ping"></span>
+              CONTAINER_LIVE
+            </span>
           </div>
-          
-          <div className="flex items-center gap-2 sm:gap-3">
+        </div>
+
+        {/* Termux Navigation Tabs Bar */}
+        <div className={`h-11 ${th.bg} border-b ${th.border} flex items-center justify-between px-3 shrink-0`}>
+          <div className="flex items-center gap-1 h-full">
             <button 
-              onClick={handleRestart}
-              className="px-3 py-1.5 sm:px-4 sm:py-2 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-semibold rounded-lg border border-emerald-500/20 transition-all flex items-center gap-1.5"
+              onClick={() => setActiveTab("bash")}
+              className={`h-full px-3 text-xs flex items-center gap-1.5 font-bold border-b-2 transition-all ${activeTab === "bash" ? "border-emerald-500 text-white" : "border-transparent " + th.textMuted}`}
             >
-              <RefreshCw className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Restart Bot</span>
+              <Terminal className="w-3.5 h-3.5 text-emerald-500" />
+              [1] termux-bash
             </button>
-            {botState.status === "CONNECTED" && (
-              <button 
-                onClick={handleDisconnect}
-                className="px-3 py-1.5 sm:px-4 sm:py-2 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-semibold rounded-lg transition-all"
-              >
-                Logout
-              </button>
+            <button 
+              onClick={() => setActiveTab("logs")}
+              className={`h-full px-3 text-xs flex items-center gap-1.5 font-bold border-b-2 transition-all ${activeTab === "logs" ? "border-emerald-500 text-white" : "border-transparent " + th.textMuted}`}
+            >
+              <Sliders className="w-3.5 h-3.5 text-emerald-500" />
+              [2] whatsapp-logs
+            </button>
+            <button 
+              onClick={() => setActiveTab("localhost")}
+              className={`h-full px-3 text-xs flex items-center gap-1.5 font-bold border-b-2 transition-all ${activeTab === "localhost" ? "border-emerald-500 text-white" : "border-transparent " + th.textMuted}`}
+            >
+              <HelpCircle className="w-3.5 h-3.5 text-emerald-500" />
+              [3] localhost-explain
+            </button>
+          </div>
+
+          <div className="flex items-center gap-2">
+            {/* Quick stats buttons */}
+            <button 
+              onClick={() => setShowMetricsPanel(!showMetricsPanel)}
+              className={`p-1.5 rounded border ${th.border} hover:bg-zinc-900/30 text-xs flex items-center gap-1 ${showMetricsPanel ? "text-emerald-400" : th.textMuted}`}
+              title="Toggle metrics dashboard side panel"
+            >
+              <Cpu className="w-3.5 h-3.5" />
+              <span className="hidden md:inline">Panel</span>
+            </button>
+            
+            {/* Cycle theme button */}
+            <button 
+              onClick={() => {
+                const themes: TerminalTheme[] = ["green", "amber", "monokai", "cyberpunk"];
+                const nextIdx = (themes.indexOf(termTheme) + 1) % themes.length;
+                setTermTheme(themes[nextIdx]);
+                showToast(`Warna terminal diubah ke: ${themes[nextIdx]}`, "info");
+              }}
+              className={`p-1.5 rounded border ${th.border} text-xs flex items-center gap-1 hover:bg-zinc-900/40 text-white`}
+              title="Ubah tema warna"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-yellow-400" />
+              <span className="hidden md:inline">Tema</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Content Workspace Splitter */}
+        <div className="flex-1 flex overflow-hidden w-full">
+          
+          {/* Main Terminal Window */}
+          <div 
+            onClick={focusTerminal}
+            className="flex-1 flex flex-col h-full p-4 overflow-y-auto cursor-text relative"
+          >
+            {/* 1. SESSION BASH */}
+            {activeTab === "bash" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Scrollable list of lines */}
+                <div className="flex-1 overflow-y-auto space-y-1 pr-2 select-text">
+                  {terminalLines.map((line, index) => {
+                    let textClass = th.text;
+                    if (line.type === "error") textClass = "text-red-400 font-semibold";
+                    else if (line.type === "success") textClass = "text-emerald-300 font-semibold";
+                    else if (line.type === "info") textClass = th.textMuted;
+                    else if (line.type === "system") textClass = "text-yellow-400 font-bold";
+                    else if (line.type === "input") textClass = "text-sky-400 font-semibold";
+
+                    return (
+                      <div key={index} className={`whitespace-pre-wrap leading-relaxed text-xs break-all`}>
+                        {line.text}
+                      </div>
+                    );
+                  })}
+                  <div ref={terminalEndRef} />
+                </div>
+
+                {/* Form prompt at the bottom */}
+                <form 
+                  onSubmit={handleCommandSubmit}
+                  className={`mt-4 pt-3 border-t ${th.border} flex items-center gap-2`}
+                >
+                  <span className="text-sky-400 font-bold shrink-0 text-xs">~/baileys-os $</span>
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={cmdInput}
+                    onChange={(e) => setCmdInput(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    className="flex-1 bg-transparent border-none outline-none focus:ring-0 text-xs text-white placeholder-emerald-950 font-mono caret-white"
+                    placeholder="ketik perintah di sini (contoh: help, stats, tt username)"
+                    autoFocus
+                    autoComplete="off"
+                    autoCapitalize="off"
+                  />
+                  <button 
+                    type="submit"
+                    className={`p-1.5 rounded ${th.border} border text-white hover:bg-emerald-950/40`}
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {/* 2. WHATSAPP LOGS VIEW */}
+            {activeTab === "logs" && (
+              <div className="flex-1 flex flex-col h-full min-h-0">
+                <div className="flex items-center justify-between border-b border-zinc-800 pb-2 mb-3">
+                  <span className="text-xs font-bold text-yellow-400">FILE: /var/log/whatsapp-bot.log</span>
+                  <button 
+                    onClick={triggerClearLogs}
+                    className="px-2.5 py-1 bg-red-950/30 hover:bg-red-950/80 border border-red-900/40 text-red-300 rounded text-[10px] font-bold flex items-center gap-1.5"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Hapus Log
+                  </button>
+                </div>
+
+                <div className="flex-1 overflow-y-auto space-y-1.5 p-3 bg-black/40 rounded-lg border border-zinc-900 pr-2 select-text font-mono text-[11px] leading-relaxed">
+                  {logs.map((log, index) => {
+                    let color = "text-zinc-500";
+                    if (log.includes("[ERROR]")) color = "text-red-400 font-semibold";
+                    else if (log.includes("[WARN]")) color = "text-amber-400";
+                    else if (log.includes("[SUCCESS]")) color = "text-emerald-400";
+                    else if (log.includes("[BOT]")) color = "text-emerald-500 font-bold";
+                    else if (log.includes("[INFO]")) color = "text-zinc-400";
+
+                    return (
+                      <div key={index} className={`${color} whitespace-pre-wrap break-all`}>
+                        {log}
+                      </div>
+                    );
+                  })}
+                  {logs.length === 0 && (
+                    <div className="text-zinc-600 italic text-center py-10">Belum ada aktifitas logs...</div>
+                  )}
+                  <div ref={logsEndRef} />
+                </div>
+              </div>
+            )}
+
+            {/* 3. LOCALHOST EXPLANATION */}
+            {activeTab === "localhost" && (
+              <div className="flex-1 flex flex-col justify-start max-w-2xl mx-auto space-y-5 py-4">
+                <div className="p-4 rounded-xl border border-yellow-950/40 bg-yellow-950/10 text-yellow-400 space-y-2">
+                  <h2 className="text-sm font-bold flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4" />
+                    ❓ Kenapa 'localhost' tidak muncul / tidak bisa diakses langsung?
+                  </h2>
+                  <p className="text-xs leading-relaxed text-zinc-300 font-mono">
+                    Aplikasi WhatsApp Bot dan dashboard ini sedang berjalan di dalam server cloud container (Google Cloud Run). 
+                    Dev server berjalan pada port 3000 di dalam cloud virtual machine tersebut, dan dipasangkan proxy link agar Anda bisa berinteraksi di web.
+                  </p>
+                </div>
+
+                <div className="space-y-4">
+                  <h3 className="text-xs font-bold text-white uppercase border-b border-zinc-800 pb-1">1. Cara Mengakses Web Saat Ini</h3>
+                  <p className="text-xs text-zinc-300 leading-normal">
+                    Gunakan URL pengembangan di browser Anda saat ini. Ini adalah link web server cloud yang terhubung langsung ke daemon bot Anda:
+                  </p>
+                  <div className="p-3 rounded-lg bg-zinc-950 border border-zinc-800 text-xs text-emerald-400 select-all font-mono">
+                    {window.location.origin}
+                  </div>
+
+                  <h3 className="text-xs font-bold text-white uppercase border-b border-zinc-800 pb-1 mt-6">2. Cara Menjalankannya di Localhost Fisik Anda</h3>
+                  <p className="text-xs text-zinc-300 leading-normal">
+                    Jika Anda ingin benar-benar menjalankannya di localhost komputer Anda sendiri:
+                  </p>
+                  <ol className="list-decimal list-inside text-xs text-zinc-400 space-y-2.5 leading-relaxed pl-1">
+                    <li>
+                      Unduh source code lengkap dengan mengklik tombol ekspor di pojok kanan atas layar AI Studio (**Export to ZIP** atau **Export to GitHub**).
+                    </li>
+                    <li>
+                      Ekstrak folder ZIP tersebut di komputer Anda.
+                    </li>
+                    <li>
+                      Buka aplikasi Terminal / Command Prompt di komputer Anda dan masuk ke direktori folder tersebut:
+                      <div className="p-2.5 mt-1.5 rounded bg-black/60 border border-zinc-900 text-yellow-500 font-mono text-xs select-all">
+                        cd path/ke/folder-anda
+                      </div>
+                    </li>
+                    <li>
+                      Pastikan Node.js sudah terinstal di komputer Anda, lalu jalankan instalasi dependency:
+                      <div className="p-2.5 mt-1.5 rounded bg-black/60 border border-zinc-900 text-yellow-500 font-mono text-xs select-all">
+                        npm install
+                      </div>
+                    </li>
+                    <li>
+                      Nyalakan server development lokal:
+                      <div className="p-2.5 mt-1.5 rounded bg-black/60 border border-zinc-900 text-yellow-500 font-mono text-xs select-all">
+                        npm run dev
+                      </div>
+                    </li>
+                    <li>
+                      Sekarang, Anda dapat membuka browser fisik komputer Anda dan mengakses:
+                      <div className="p-2.5 mt-1.5 rounded bg-black/60 border border-zinc-900 text-emerald-400 font-bold font-mono text-xs select-all">
+                        http://localhost:3000
+                      </div>
+                    </li>
+                  </ol>
+                </div>
+              </div>
             )}
           </div>
-        </header>
 
-        {/* Content View */}
-        <div className="flex-1 p-6 sm:p-8 space-y-6 flex flex-col min-h-0">
-          
-          {/* Toast Notification */}
-          {toast && (
-            <div className="fixed top-5 right-5 z-50 flex items-center gap-3 px-4 py-3 rounded-xl shadow-2xl border text-sm max-w-sm transition-all duration-300 animate-bounce bg-zinc-900 border-zinc-800 text-zinc-100">
-              {toast.type === "success" && <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />}
-              {toast.type === "error" && <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />}
-              {toast.type === "info" && <HelpCircle className="w-5 h-5 text-emerald-400 shrink-0" />}
-              <span className="font-medium">{toast.message}</span>
-            </div>
-          )}
-
-          {/* Statistics Section */}
-          <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-2xl">
-              <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-1">Uptime</div>
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-white font-mono">{stats.uptime}</div>
-            </div>
-            
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-2xl">
-              <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-1">Total Messages</div>
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-white font-mono">
-                {stats.totalMessages.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-2xl">
-              <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-1">Total Users</div>
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-white font-mono">
-                {stats.totalUsers.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="bg-zinc-900/40 border border-zinc-800/50 p-4 rounded-2xl">
-              <div className="text-zinc-500 text-[10px] font-semibold uppercase tracking-wider mb-1">Commands Executed</div>
-              <div className="text-lg sm:text-xl font-bold tracking-tight text-white font-mono">
-                {stats.totalCommands} <span className="text-emerald-400 text-xs ml-1">total</span>
-              </div>
-            </div>
-          </section>
-
-          {/* Quick Connection & Performance Metrics */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-shrink-0">
-            
-            {/* Left Box: Quick Connection */}
-            <div className="lg:col-span-8 bg-zinc-900/40 border border-zinc-800/50 p-6 rounded-2xl flex flex-col sm:flex-row items-center justify-between gap-6">
-              <div className="space-y-4 flex-1 w-full">
-                <div>
-                  <h3 className="text-base font-semibold text-white">Quick Connection</h3>
-                  <p className="text-xs text-zinc-500">Ready to connect via WhatsApp Pairing Code</p>
+          {/* Right Metrics Panel */}
+          {showMetricsPanel && (
+            <div className={`w-80 border-l ${th.border} bg-black/30 p-4 flex flex-col gap-5 overflow-y-auto hidden lg:flex shrink-0`}>
+              
+              {/* WhatsApp Connection Widget */}
+              <div className={`p-4 rounded-xl border ${th.border} bg-[#000000]/40 space-y-3`}>
+                <div className="flex justify-between items-center">
+                  <span className="text-[10px] font-bold uppercase text-zinc-500">WHATSAPP CONNECTION</span>
+                  <span className={`w-2 h-2 rounded-full ${botState.status === "CONNECTED" ? "bg-emerald-400 animate-pulse" : botState.status === "CONNECTING" ? "bg-amber-400 animate-ping" : "bg-red-500"}`} />
                 </div>
                 
-                {botState.status === "CONNECTED" ? (
-                  <div className="space-y-3">
-                    <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs font-semibold text-emerald-400 font-mono">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Active: +{botState.phoneNumber}
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={handleDisconnect}
-                        className="py-2 px-4 bg-amber-600 hover:bg-amber-700 text-white font-semibold rounded-lg text-xs transition-all flex items-center justify-center gap-1.5"
-                      >
-                        <Square className="w-3.5 h-3.5" />
-                        Disconnect
-                      </button>
-                      <button
-                        onClick={handleLogout}
-                        className="py-2 px-4 bg-red-600/10 hover:bg-red-600 text-red-400 hover:text-white font-semibold rounded-lg text-xs transition-all flex items-center justify-center gap-1.5 border border-red-500/20"
-                      >
-                        <LogOut className="w-3.5 h-3.5" />
-                        Logout
-                      </button>
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-lg bg-zinc-900 border ${th.border}`}>
+                    <Smartphone className="w-5 h-5 text-emerald-400" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-white uppercase">{botState.status}</div>
+                    <div className="text-[10px] text-zinc-400">
+                      {botState.phoneNumber ? `+${botState.phoneNumber}` : "No phone connected"}
                     </div>
                   </div>
-                ) : (
-                  <div className="space-y-4">
-                    <form onSubmit={handleConnect} className="flex flex-col sm:flex-row gap-3">
-                      <input 
-                        type="text" 
-                        value={phoneInput}
-                        onChange={(e) => setPhoneInput(e.target.value)}
-                        placeholder="628123456789" 
-                        className="flex-1 bg-zinc-950 border border-zinc-800 rounded-lg px-4 py-2.5 text-xs text-zinc-100 focus:outline-none focus:border-zinc-700 placeholder-zinc-600 font-mono"
-                        disabled={botState.status === "CONNECTING"}
+                </div>
+
+                {botState.pairingCode && (
+                  <div className="p-3 rounded-lg bg-emerald-950/10 border border-emerald-900/40 text-center space-y-1.5">
+                    <div className="text-[9px] text-emerald-400/80 font-bold uppercase tracking-wider">PAIRING CODE ACTIVE</div>
+                    <div className="text-lg font-bold tracking-[0.25em] text-emerald-300 font-mono animate-pulse">{botState.pairingCode}</div>
+                    <div className="text-[9px] text-zinc-500 leading-snug">
+                      Masukkan kode ini di HP WhatsApp Anda → Perangkat Tertaut → Tautkan dengan nomor telepon saja.
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-2 pt-1">
+                  <button 
+                    onClick={triggerRestart}
+                    className="p-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 rounded text-[10px] text-white font-bold flex items-center justify-center gap-1"
+                  >
+                    <RefreshCw className="w-3 h-3" />
+                    Restart Daemon
+                  </button>
+                  <button 
+                    onClick={triggerLogout}
+                    className="p-1.5 bg-red-950/20 hover:bg-red-900 hover:text-white border border-red-900/30 rounded text-[10px] text-red-400 font-bold flex items-center justify-center gap-1"
+                  >
+                    <LogOut className="w-3 h-3" />
+                    Clear Session
+                  </button>
+                </div>
+              </div>
+
+              {/* Resource Monitors */}
+              <div className={`p-4 rounded-xl border ${th.border} bg-[#000000]/40 space-y-4`}>
+                <span className="text-[10px] font-bold uppercase text-zinc-500">RESOURCE MONITOR</span>
+                
+                {/* CPU bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-zinc-400 uppercase">CPU Core</span>
+                    <span className="font-bold text-emerald-400">{stats.cpuPercent}%</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px] leading-none font-bold">
+                    <span className="text-zinc-600 font-normal">CPU [</span>
+                    <span className="text-emerald-400">
+                      {"■".repeat(Math.round(stats.cpuPercent / 10))}
+                      {"□".repeat(10 - Math.round(stats.cpuPercent / 10))}
+                    </span>
+                    <span className="text-zinc-600 font-normal">]</span>
+                  </div>
+                </div>
+
+                {/* RAM bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px]">
+                    <span className="text-zinc-400 uppercase">RAM MEMORY</span>
+                    <span className="font-bold text-emerald-400">{stats.ramUsed}</span>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px] leading-none font-bold">
+                    <span className="text-zinc-600 font-normal">MEM [</span>
+                    <span className="text-emerald-400">
+                      {"■".repeat(Math.round(stats.ramPercent / 10))}
+                      {"□".repeat(10 - Math.round(stats.ramPercent / 10))}
+                    </span>
+                    <span className="text-zinc-600 font-normal">]</span>
+                  </div>
+                </div>
+
+                <div className="pt-2 border-t border-zinc-900 flex justify-between text-[10px] text-zinc-500">
+                  <span>OS: {stats.platform}</span>
+                  <span>Node: {stats.nodeVersion}</span>
+                </div>
+              </div>
+
+              {/* Bot stats widget */}
+              <div className={`p-4 rounded-xl border ${th.border} bg-[#000000]/40 space-y-3 text-xs`}>
+                <span className="text-[10px] font-bold uppercase text-zinc-500 block">SYSTEM STATS</span>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="p-2.5 rounded bg-zinc-950 border border-zinc-900 text-center">
+                    <div className="text-[10px] text-zinc-500">Uptime</div>
+                    <div className="font-bold text-white text-xs mt-0.5 truncate">{stats.uptime}</div>
+                  </div>
+                  <div className="p-2.5 rounded bg-zinc-950 border border-zinc-900 text-center">
+                    <div className="text-[10px] text-zinc-500">Pesan</div>
+                    <div className="font-bold text-white text-xs mt-0.5">{stats.totalMessages}</div>
+                  </div>
+                  <div className="p-2.5 rounded bg-zinc-950 border border-zinc-900 text-center">
+                    <div className="text-[10px] text-zinc-500">Command</div>
+                    <div className="font-bold text-white text-xs mt-0.5">{stats.totalCommands}</div>
+                  </div>
+                  <div className="p-2.5 rounded bg-zinc-950 border border-zinc-900 text-center">
+                    <div className="text-[10px] text-zinc-500">User</div>
+                    <div className="font-bold text-white text-xs mt-0.5">{stats.totalUsers}</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* TikTok Avatar preview */}
+              {lastTikTokResult && (
+                <div className={`p-4 rounded-xl border ${th.border} bg-[#000000]/40 text-center space-y-3`}>
+                  <span className="text-[10px] font-bold uppercase text-zinc-500 block">TIKTOK AVATAR PREVIEW</span>
+                  {lastTikTokResult.avatarUrl ? (
+                    <div className="relative inline-block mx-auto rounded-full p-1 bg-gradient-to-tr from-rose-500 to-sky-400">
+                      <img 
+                        src={lastTikTokResult.avatarUrl} 
+                        alt="TikTok Avatar"
+                        referrerPolicy="no-referrer"
+                        className="w-20 h-20 rounded-full object-cover border-2 border-black" 
                       />
-                      <button
-                        type="submit"
-                        disabled={botState.status === "CONNECTING"}
-                        className="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-500/50 text-black font-bold rounded-lg text-xs transition-all flex items-center justify-center gap-1.5 shrink-0"
-                      >
-                        <Play className="w-3.5 h-3.5 fill-current" />
-                        Generate Code
-                      </button>
-                    </form>
-                    
-                    {botState.pairingCode && (
-                      <div className="flex flex-col gap-2 p-4 bg-zinc-950/50 border border-zinc-800 rounded-xl max-w-md">
-                        <div className="text-[10px] text-zinc-500 uppercase tracking-wider font-semibold">Your Pairing Code:</div>
-                        <div className="bg-zinc-950 border border-zinc-700 px-4 py-2.5 rounded-lg font-mono text-lg font-bold tracking-[0.25em] text-emerald-400 shadow-inner inline-block w-fit animate-pulse">
-                          {botState.pairingCode}
-                        </div>
-                        <p className="text-[10px] text-zinc-500 leading-normal">
-                          Masukkan kode ini di HP WhatsApp Anda melalui menu <strong>Perangkat Tertaut {"→"} Tautkan Perangkat {"→"} Tautkan dengan nomor telepon saja</strong>.
-                        </p>
-                      </div>
-                    )}
+                    </div>
+                  ) : (
+                    <div className="w-16 h-16 bg-zinc-900 rounded-full mx-auto flex items-center justify-center text-zinc-600 border border-zinc-800 text-xs">No PFP</div>
+                  )}
+                  <div className="text-xs">
+                    <div className="font-bold text-white">{lastTikTokResult.name}</div>
+                    <div className="text-[10px] text-emerald-400">@{lastTikTokResult.username}</div>
                   </div>
-                )}
-              </div>
-              
-              <div className="w-32 h-32 bg-zinc-900/50 border border-zinc-800/50 rounded-2xl flex flex-col items-center justify-center gap-2 shrink-0">
-                <div className="p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50 text-zinc-400">
-                  <Phone className="w-6 h-6" />
                 </div>
-                <span className="text-[9px] text-zinc-500 font-mono uppercase tracking-widest">Pairing Mode</span>
-              </div>
+              )}
+
             </div>
-
-            {/* Right Box: Resource Metrics */}
-            <div className="lg:col-span-4 space-y-4 bg-zinc-900/40 border border-zinc-800/50 p-6 rounded-2xl justify-center flex flex-col">
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-zinc-400 font-medium">CPU USAGE</span>
-                  <span className="text-xs text-emerald-400 font-bold font-mono">{stats.cpuPercent}%</span>
-                </div>
-                <div className="w-full bg-zinc-800/50 h-1.5 rounded-full overflow-hidden border border-zinc-800/30">
-                  <div 
-                    className="bg-emerald-500 h-full rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] transition-all duration-500" 
-                    style={{ width: `${stats.cpuPercent}%` }}
-                  ></div>
-                </div>
-              </div>
-              
-              <div>
-                <div className="flex justify-between items-center mb-2">
-                  <span className="text-xs text-zinc-400 font-medium">RAM USAGE</span>
-                  <span className="text-xs text-emerald-400 font-bold font-mono">{stats.ramUsed}</span>
-                </div>
-                <div className="w-full bg-zinc-800/50 h-1.5 rounded-full overflow-hidden border border-zinc-800/30">
-                  <div 
-                    className="bg-emerald-500 h-full rounded-full shadow-[0_0_8px_rgba(16,185,129,0.5)] transition-all duration-500" 
-                    style={{ width: `${stats.ramPercent}%` }}
-                  ></div>
-                </div>
-              </div>
-
-              <div className="pt-2 text-[10px] text-zinc-500 font-mono flex justify-between items-center border-t border-zinc-800/40">
-                <span>Platform: {stats.platform}</span>
-                <span>Node: {stats.nodeVersion}</span>
-              </div>
-            </div>
-          </section>
-
-          {/* Bottom Grid: Commands Directory and Terminal Logs */}
-          <section className="grid grid-cols-1 lg:grid-cols-12 gap-6 flex-1 min-h-0">
-            
-            {/* Left Panel: Commands Directory */}
-            <div id="commands" className="lg:col-span-5 bg-zinc-900/40 border border-zinc-800/50 p-6 rounded-2xl flex flex-col max-h-[400px] lg:max-h-[500px]">
-              <h3 className="font-semibold text-white text-sm mb-4 flex items-center gap-2 pb-2 border-b border-zinc-800/50 shrink-0">
-                <BookOpen className="w-4 h-4 text-emerald-400" />
-                Commands Directory ({commands.length})
-              </h3>
-              
-              <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 text-xs">
-                {commands.map((cmd) => (
-                  <div key={cmd.name} className="p-3 bg-zinc-950/40 hover:bg-zinc-950/80 rounded-xl border border-zinc-800/50 transition-all">
-                    <div className="flex justify-between items-center mb-1">
-                      <span className="font-bold text-emerald-400 font-mono">.{cmd.name}</span>
-                      <span className="text-[9px] uppercase font-mono px-1.5 py-0.5 rounded bg-zinc-900 text-emerald-300 border border-zinc-800/60">
-                        {cmd.category}
-                      </span>
-                    </div>
-                    <p className="text-zinc-400 text-[11px] leading-relaxed">{cmd.description}</p>
-                    <div className="mt-1.5 text-[9px] font-mono text-zinc-500 flex justify-between">
-                      <span>Usage: {cmd.usage}</span>
-                      {cmd.aliases.length > 0 && <span>Aliases: {cmd.aliases.join(", ")}</span>}
-                    </div>
-                  </div>
-                ))}
-                {commands.length === 0 && (
-                  <p className="text-center text-zinc-500 py-6 font-mono">No commands loaded.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Right Panel: Terminal Activity Log */}
-            <div className="lg:col-span-7 bg-zinc-900/40 border border-zinc-800/50 p-6 rounded-2xl flex flex-col max-h-[400px] lg:max-h-[500px]">
-              <div className="flex items-center justify-between mb-4 pb-2 border-b border-zinc-800/50 shrink-0">
-                <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-widest flex items-center gap-2">
-                  <div className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-pulse"></div>
-                  Realtime Activity Log
-                </h3>
-                <button 
-                  onClick={handleClearLogs}
-                  className="text-[10px] text-zinc-500 hover:text-white uppercase font-bold tracking-wider transition-colors flex items-center gap-1"
-                >
-                  <Trash2 className="w-3 h-3" />
-                  Clear Console
-                </button>
-              </div>
-              
-              <div className="flex-1 bg-[#050508] border border-zinc-800 rounded-xl p-4 font-mono text-[11px] leading-relaxed overflow-y-auto flex flex-col space-y-1.5">
-                {logs.map((log, index) => {
-                  let colorClass = "text-zinc-500";
-                  if (log.includes("[ERROR]")) colorClass = "text-red-400 font-medium";
-                  else if (log.includes("[WARN]")) colorClass = "text-amber-400";
-                  else if (log.includes("[SUCCESS]")) colorClass = "text-emerald-400";
-                  else if (log.includes("[BOT]")) colorClass = "text-emerald-500 font-medium";
-                  else if (log.includes("[INFO]")) colorClass = "text-zinc-400";
-
-                  return (
-                    <div key={index} className={`${colorClass} whitespace-pre-wrap leading-relaxed`}>
-                      {log}
-                    </div>
-                  );
-                })}
-                {logs.length === 0 && (
-                  <div className="text-zinc-500 italic text-center py-8">Waiting for activities...</div>
-                )}
-                <div ref={terminalEndRef} />
-              </div>
-            </div>
-          </section>
-
+          )}
         </div>
 
-        {/* Footer */}
-        <footer className="mt-auto border-t border-zinc-800/50 py-4 text-center text-[10px] text-zinc-600 bg-[#09090b]">
-          <p>© 2026 BaileysOS. Crafted professionally with Baileys & Node.js.</p>
-        </footer>
-      </main>
+        {/* Termux Bottom Keyboard Helper Shortcuts Bar (crucial for retro styling) */}
+        <div className={`h-11 ${th.bg} border-t ${th.border} flex items-center gap-1.5 px-3 overflow-x-auto shrink-0 select-none scrollbar-none`}>
+          <button 
+            onClick={() => handleShortcutClick("HELP")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-white transition-all`}
+          >
+            HELP
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("NEOFETCH")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-white transition-all`}
+          >
+            NEOFETCH
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("TAB")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-emerald-400 transition-all`}
+            title="Auto-complete command"
+          >
+            TAB ⇥
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("UP")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-white transition-all`}
+            title="History up"
+          >
+            UP ▲
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("DOWN")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-white transition-all`}
+            title="History down"
+          >
+            DOWN ▼
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("CLEAR")}
+            className={`px-3 py-1 bg-zinc-950/80 hover:bg-zinc-900 border ${th.border} rounded text-[10px] font-bold text-red-400 transition-all`}
+          >
+            CLEAR
+          </button>
+          <button 
+            onClick={() => handleShortcutClick("LOCALHOST")}
+            className={`px-3 py-1 bg-yellow-950/20 hover:bg-yellow-900/30 border border-yellow-900/30 rounded text-[10px] font-bold text-yellow-400 transition-all`}
+          >
+            LOCALHOST?
+          </button>
+        </div>
+
+      </div>
 
     </div>
   );

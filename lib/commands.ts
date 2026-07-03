@@ -1,12 +1,10 @@
 import { addLog } from "../utils/logger.js";
 
 // Static imports of commands
-import bratCommand from "../commands/brat.js";
 import buttonCommand from "../commands/button.js";
 import menuCommand from "../commands/menu.js";
 import ownerCommand from "../commands/owner.js";
 import pingCommand from "../commands/ping.js";
-import stickerCommand from "../commands/sticker.js";
 import tiktokCommand from "../commands/tiktok.js";
 import ttCommand from "../commands/tt.js";
 
@@ -22,12 +20,10 @@ export interface Command {
 export const commandsRegistry = new Map<string, Command>();
 
 const commandsList = [
-  bratCommand,
   buttonCommand,
   menuCommand,
   ownerCommand,
   pingCommand,
-  stickerCommand,
   tiktokCommand,
   ttCommand
 ];

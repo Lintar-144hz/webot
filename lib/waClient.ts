@@ -97,6 +97,17 @@ export async function connectWhatsApp(requestedPhone: string = "") {
       sock.ev.removeAllListeners("creds.update");
       sock.ev.removeAllListeners("messages.upsert");
     } catch (e) {}
+    try {
+      sock.end(undefined);
+    } catch (err) {}
+    sock = null;
+  }
+
+  // If a specific phone number is requested, we MUST clear the previous session 
+  // to ensure we generate a pairing code for this fresh number!
+  if (requestedPhone) {
+    addLog(`Fresh phone number requested (${requestedPhone}). Clearing old session...`, "INFO");
+    clearSession();
   }
 
   botState.status = "CONNECTING";
@@ -111,8 +122,10 @@ export async function connectWhatsApp(requestedPhone: string = "") {
     fs.mkdirSync(sessionDir, { recursive: true });
   }
 
-  // Restore persistent workspace session if available
-  restoreSessionFromWorkspace();
+  // Restore persistent workspace session if available (only if we are not starting a fresh requested phone session)
+  if (!requestedPhone) {
+    restoreSessionFromWorkspace();
+  }
 
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version } = await fetchLatestBaileysVersion();
@@ -239,9 +252,14 @@ export async function connectWhatsApp(requestedPhone: string = "") {
   // If we are not registered and a phone number was supplied, request a pairing code!
   if (!state.creds.registered && requestedPhone) {
     try {
-      // Delay slightly to let socket initialize
+      // Clean and format Indonesian phone numbers starting with '08' to '628'
+      let cleanPhone = requestedPhone.replace(/[^0-9]/g, "");
+      if (cleanPhone.startsWith("08")) {
+        cleanPhone = "62" + cleanPhone.slice(1);
+      }
+      
+      // Delay slightly to let socket initialize and connect
       await delay(3000);
-      const cleanPhone = requestedPhone.replace(/[^0-9]/g, "");
       addLog(`Requesting Pairing Code for: ${cleanPhone}...`, "INFO");
       const code = await sock.requestPairingCode(cleanPhone);
       botState.pairingCode = code;
@@ -252,6 +270,7 @@ export async function connectWhatsApp(requestedPhone: string = "") {
       botState.pairingCode = null;
       botState.status = "DISCONNECTED";
       broadcastState();
+      throw new Error(`Gagal meminta pairing code: ${err.message}`);
     }
   }
 

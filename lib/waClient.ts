@@ -12,6 +12,10 @@ import { getSocketIO } from "./socket.js";
 import { commandsRegistry, loadCommands } from "./commands.js";
 import { incrementMessages, incrementCommands, registerUser } from "../utils/stats.js";
 import { config } from "../config/config.js";
+import { 
+  saveSessionToWorkspace, 
+  restoreSessionFromWorkspace 
+} from "../utils/sessionStorage.js";
 
 export type ConnectionStatus = "CONNECTED" | "CONNECTING" | "DISCONNECTED";
 
@@ -51,6 +55,17 @@ export function clearSession() {
       addLog(`Failed to delete session files: ${err.message}`, "WARN");
     }
   }
+  
+  const backupFile = path.join(process.cwd(), "config", "session_backup.json");
+  if (fs.existsSync(backupFile)) {
+    try {
+      fs.unlinkSync(backupFile);
+      addLog("WhatsApp session workspace backup deleted", "INFO");
+    } catch (err: any) {
+      addLog(`Failed to delete session backup: ${err.message}`, "WARN");
+    }
+  }
+
   botState.status = "DISCONNECTED";
   botState.phoneNumber = "";
   botState.pairingCode = null;
@@ -91,6 +106,9 @@ export async function connectWhatsApp(requestedPhone: string = "") {
     fs.mkdirSync(sessionDir, { recursive: true });
   }
 
+  // Restore persistent workspace session if available
+  restoreSessionFromWorkspace();
+
   const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
   const { version } = await fetchLatestBaileysVersion();
 
@@ -102,8 +120,11 @@ export async function connectWhatsApp(requestedPhone: string = "") {
     logger: pino({ level: "silent" }) as any, // Silent default pino logger of Baileys to prevent console spam
   });
 
-  // Handle creds update
-  sock.ev.on("creds.update", saveCreds);
+  // Handle creds update with automatic backup saving
+  sock.ev.on("creds.update", async () => {
+    await saveCreds();
+    saveSessionToWorkspace();
+  });
 
   // Handle connection updates
   sock.ev.on("connection.update", async (update: any) => {

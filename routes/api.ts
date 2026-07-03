@@ -1,5 +1,12 @@
 import express from "express";
-import { getBotState, connectWhatsApp, disconnectWhatsApp, clearSession } from "../lib/waClient.js";
+import { 
+  getBotState, 
+  connectWhatsApp, 
+  disconnectWhatsApp, 
+  clearSession,
+  getChatHistory,
+  simulateIncomingMessage
+} from "../lib/waClient.js";
 import { getStats } from "../utils/stats.js";
 import { logBuffer, clearLogs, addLog } from "../utils/logger.js";
 import { getUniqueCommands } from "../lib/commands.js";
@@ -213,6 +220,26 @@ router.post("/ai", async (req, res) => {
     res.json({ text: response.text });
   } catch (err: any) {
     res.status(500).json({ error: err.message || "Gagal menghubungi Gemini AI." });
+  }
+});
+
+// GET chat history for the dashboard simulator
+router.get("/chat-history", (req, res) => {
+  res.json({ chat: getChatHistory() });
+});
+
+// POST simulate incoming message to the bot
+router.post("/simulate-message", async (req, res) => {
+  const { text, senderName, senderPhone } = req.body;
+  if (!text) {
+    return res.status(400).json({ error: "Isi pesan tidak boleh kosong." });
+  }
+
+  try {
+    await simulateIncomingMessage(text, senderName, senderPhone);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Gagal memproses pesan simulasi." });
   }
 });
 

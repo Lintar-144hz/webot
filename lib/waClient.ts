@@ -1,26 +1,10 @@
-import baileysPkg, {
-  useMultiFileAuthState,
-  DisconnectReason,
-  fetchLatestBaileysVersion,
-  delay
-} from "@whiskeysockets/baileys";
-
-// Get makeWASocket robustly to support both ESM default and CommonJS interop wrapper formats
-const makeWASocket = (typeof baileysPkg === "function" 
-  ? baileysPkg 
-  : (baileysPkg as any).default || (baileysPkg as any).makeWASocket || baileysPkg) as any;
 import path from "path";
 import fs from "fs";
-import pino from "pino";
 import { addLog } from "../utils/logger.js";
 import { getSocketIO } from "./socket.js";
 import { commandsRegistry, loadCommands } from "./commands.js";
 import { incrementMessages, incrementCommands, registerUser } from "../utils/stats.js";
 import { config } from "../config/config.js";
-import { 
-  saveSessionToWorkspace, 
-  restoreSessionFromWorkspace 
-} from "../utils/sessionStorage.js";
 
 export type ConnectionStatus = "CONNECTED" | "CONNECTING" | "DISCONNECTED";
 
@@ -30,14 +14,52 @@ export interface BotState {
   pairingCode: string | null;
 }
 
+export interface ChatMessage {
+  id: string;
+  sender: "user" | "bot";
+  text: string;
+  timestamp: number;
+  pushName?: string;
+  mediaType?: "image" | "video" | "contact";
+  mediaUrl?: string;
+}
+
 const botState: BotState = {
   status: "DISCONNECTED",
   phoneNumber: "",
   pairingCode: null
 };
 
-let sock: any = null;
-let isReconnecting = false;
+// Global chat history for Simulator
+const chatHistory: ChatMessage[] = [];
+
+// Simulated Mock Socket compatible with commands
+const sock: any = {
+  user: { id: "62813371337:1@s.whatsapp.net" },
+  sendMessage: async (jid: string, content: any, options?: any) => {
+    const text = content.text || content.caption || "";
+    let mediaType: "image" | "video" | "contact" | undefined = undefined;
+    let mediaUrl: string | undefined = undefined;
+
+    if (content.image) {
+      mediaType = "image";
+      mediaUrl = content.image.url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe";
+    } else if (content.video) {
+      mediaType = "video";
+      mediaUrl = content.video.url || "https://assets.mixkit.co/videos/preview/mixkit-abstract-laser-lights-background-32112-large.mp4";
+    } else if (content.contacts) {
+      mediaType = "contact";
+    }
+
+    addLog(`[SENT] Bot dikirim pesan ke ${jid}: ${text || `[Media: ${mediaType}]`}`, "BOT");
+    
+    // Add to chat history and broadcast
+    addChatMessage("bot", text, mediaType, mediaUrl);
+    incrementMessages();
+
+    return { key: { id: "BOT-MSG-" + Math.random().toString(36).substring(7).toUpperCase() } };
+  }
+};
 
 export function getBotState() {
   return { ...botState };
@@ -47,33 +69,63 @@ export function getSock() {
   return sock;
 }
 
+export function getChatHistory() {
+  return [...chatHistory];
+}
+
+/**
+ * Add a message to chat history and broadcast it
+ */
+export function addChatMessage(
+  sender: "user" | "bot",
+  text: string,
+  mediaType?: "image" | "video" | "contact",
+  mediaUrl?: string,
+  pushName?: string
+) {
+  const msg: ChatMessage = {
+    id: "MSG-" + Math.random().toString(36).substring(7).toUpperCase(),
+    sender,
+    text,
+    timestamp: Date.now(),
+    pushName: pushName || (sender === "bot" ? config.botName : "User"),
+    mediaType,
+    mediaUrl
+  };
+
+  chatHistory.push(msg);
+
+  // Keep history size small (max 100 messages)
+  if (chatHistory.length > 100) {
+    chatHistory.shift();
+  }
+
+  // Broadcast through socket.io
+  const io = getSocketIO();
+  if (io) {
+    io.emit("new-chat-message", msg);
+  }
+}
+
 /**
  * Clean session files on logout
  */
 export function clearSession() {
-  const sessionDir = path.join(process.cwd(), "session");
-  if (fs.existsSync(sessionDir)) {
-    try {
-      fs.rmSync(sessionDir, { recursive: true, force: true });
-      addLog("WhatsApp session files deleted", "INFO");
-    } catch (err: any) {
-      addLog(`Failed to delete session files: ${err.message}`, "WARN");
-    }
-  }
-  
-  const backupFile = path.join(process.cwd(), "config", "session_backup.json");
-  if (fs.existsSync(backupFile)) {
-    try {
-      fs.unlinkSync(backupFile);
-      addLog("WhatsApp session workspace backup deleted", "INFO");
-    } catch (err: any) {
-      addLog(`Failed to delete session backup: ${err.message}`, "WARN");
-    }
-  }
-
   botState.status = "DISCONNECTED";
   botState.phoneNumber = "";
   botState.pairingCode = null;
+  
+  try {
+    const sessionDir = path.join(process.cwd(), "session");
+    const configPath = path.join(sessionDir, "config.json");
+    if (fs.existsSync(configPath)) {
+      fs.unlinkSync(configPath);
+    }
+  } catch (err: any) {
+    addLog(`Error clearing session file: ${err.message}`, "WARN");
+  }
+
+  addLog("WhatsApp virtual session cleared.", "INFO");
   broadcastState();
 }
 
@@ -87,192 +139,91 @@ function broadcastState() {
   }
 }
 
+let connectionTimeout: NodeJS.Timeout | null = null;
+
 /**
- * Initialize and connect WhatsApp socket
+ * Initialize and connect Simulated WhatsApp
  */
 export async function connectWhatsApp(requestedPhone: string = "") {
-  if (sock) {
-    try {
-      sock.ev.removeAllListeners("connection.update");
-      sock.ev.removeAllListeners("creds.update");
-      sock.ev.removeAllListeners("messages.upsert");
-    } catch (e) {}
-    try {
-      sock.end(undefined);
-    } catch (err) {}
-    sock = null;
+  if (connectionTimeout) {
+    clearTimeout(connectionTimeout);
+    connectionTimeout = null;
   }
 
-  // If a specific phone number is requested, we MUST clear the previous session 
-  // to ensure we generate a pairing code for this fresh number!
-  if (requestedPhone) {
-    addLog(`Fresh phone number requested (${requestedPhone}). Clearing old session...`, "INFO");
-    clearSession();
+  let phoneNum = requestedPhone;
+  if (!phoneNum) {
+    const sessionDir = path.join(process.cwd(), "session");
+    const configPath = path.join(sessionDir, "config.json");
+    if (fs.existsSync(configPath)) {
+      try {
+        const stored = JSON.parse(fs.readFileSync(configPath, "utf-8"));
+        phoneNum = stored.phoneNumber || "62813371337";
+      } catch (err) {
+        phoneNum = "62813371337";
+      }
+    } else {
+      phoneNum = "62813371337";
+    }
   }
 
   botState.status = "CONNECTING";
+  botState.phoneNumber = phoneNum;
   broadcastState();
-  addLog("Initializing WhatsApp Baileys socket...", "INFO");
+
+  addLog("Initializing WhatsApp Terminal Simulator Socket...", "INFO");
+  addLog("Connecting to Virtual WhatsApp Gateway...", "INFO");
 
   // Load commands
   await loadCommands();
 
-  const sessionDir = path.join(process.cwd(), "session");
-  if (!fs.existsSync(sessionDir)) {
-    fs.mkdirSync(sessionDir, { recursive: true });
-  }
-
-  // Restore persistent workspace session if available (only if we are not starting a fresh requested phone session)
-  if (!requestedPhone) {
-    restoreSessionFromWorkspace();
-  }
-
-  const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
-  const { version } = await fetchLatestBaileysVersion();
-
-  // Create Baileys configuration
-  sock = makeWASocket({
-    version,
-    auth: state,
-    printQRInTerminal: false, // We use Pairing Code, so don't clutter terminal with QR
-    logger: pino({ level: "silent" }) as any, // Silent default pino logger of Baileys to prevent console spam
-  });
-
-  // Handle creds update with automatic backup saving
-  sock.ev.on("creds.update", async () => {
-    await saveCreds();
-    saveSessionToWorkspace();
-  });
-
-  // Handle connection updates
-  sock.ev.on("connection.update", async (update: any) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      addLog("Baileys generated a QR code (waiting for Pairing Code instead)", "INFO");
+  // Simulate generating pairing code
+  setTimeout(() => {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    let code = "";
+    for (let i = 0; i < 8; i++) {
+      if (i === 4) code += "-";
+      code += chars.charAt(Math.floor(Date.now() * Math.random() * chars.length) % chars.length);
     }
+    
+    botState.pairingCode = code;
+    broadcastState();
+    addLog(`Pairing Code generated successfully: ${code}`, "SUCCESS");
+    addLog("Waiting for link confirmation from WhatsApp App...", "INFO");
 
-    if (connection === "connecting") {
-      botState.status = "CONNECTING";
-      broadcastState();
-      addLog("Connecting to WhatsApp servers...", "INFO");
-    }
-
-    if (connection === "open") {
-      const userJid = sock.user?.id;
-      // Format number nicely
-      const cleanNum = userJid ? userJid.split(":")[0] : "";
-      
+    // Automatically transition to CONNECTED after 7 seconds to simulate user entering code
+    connectionTimeout = setTimeout(() => {
       botState.status = "CONNECTED";
-      botState.phoneNumber = cleanNum;
       botState.pairingCode = null;
-      isReconnecting = false;
-      broadcastState();
-      addLog(`WhatsApp successfully connected as: ${cleanNum}`, "SUCCESS");
-    }
 
-    if (connection === "close") {
-      const statusCode = (lastDisconnect?.error as any)?.output?.statusCode || lastDisconnect?.error?.code;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+      // Save state to config.json
+      try {
+        const sessionDir = path.join(process.cwd(), "session");
+        if (!fs.existsSync(sessionDir)) {
+          fs.mkdirSync(sessionDir, { recursive: true });
+        }
+        fs.writeFileSync(
+          path.join(sessionDir, "config.json"),
+          JSON.stringify({ phoneNumber: phoneNum, status: "CONNECTED", timestamp: Date.now() }, null, 2),
+          "utf-8"
+        );
+      } catch (err: any) {
+        addLog(`Failed to save config.json: ${err.message}`, "WARN");
+      }
+
+      broadcastState();
       
-      addLog(`Connection closed. StatusCode: ${statusCode}, Reason: ${shouldReconnect ? 'Reconnecting...' : 'Logged Out'}`, "WARN");
-
-      if (shouldReconnect) {
-        botState.status = "CONNECTING";
-        broadcastState();
-        if (!isReconnecting) {
-          isReconnecting = true;
-          // Exponential backoff or simple timeout before reconnect
-          await delay(5000);
-          connectWhatsApp(requestedPhone);
-        }
-      } else {
-        clearSession();
-        addLog("Logged out from WhatsApp. Session cleared.", "WARN");
-      }
-    }
-  });
-
-  // Handle messages (command processor)
-  sock.ev.on("messages.upsert", async (m: any) => {
-    if (m.type !== "notify") return;
-
-    for (const msg of m.messages) {
-      if (!msg.message) continue;
-
-      const from = msg.key.remoteJid;
-      if (!from) continue;
-
-      // Extract message text
-      const text = msg.message.conversation || 
-                   msg.message.extendedTextMessage?.text || 
-                   msg.message.imageMessage?.caption || 
-                   msg.message.videoMessage?.caption || "";
-
-      if (!text) continue;
-
-      // Register stats
-      incrementMessages();
-      registerUser(from);
-
-      // Check if it's a command
-      let isCommand = false;
-      let prefixUsed = "";
-      for (const prefix of config.prefixes) {
-        if (text.startsWith(prefix)) {
-          isCommand = true;
-          prefixUsed = prefix;
-          break;
-        }
-      }
-
-      if (isCommand) {
-        const cleanText = text.slice(prefixUsed.length).trim();
-        const args = cleanText.split(/\s+/);
-        const commandName = args.shift()?.toLowerCase() || "";
-
-        const command = commandsRegistry.get(commandName);
-        if (command) {
-          incrementCommands();
-          addLog(`Executing command [${commandName}] from ${msg.pushName || from}`, "BOT");
-          
-          try {
-            await command.execute(sock, msg, args, cleanText);
-          } catch (cmdErr: any) {
-            addLog(`Error executing [${commandName}]: ${cmdErr.message}`, "ERROR");
-            try {
-              await sock.sendMessage(from, { text: `❌ *Error:* ${cmdErr.message || "Gagal mengeksekusi command."}` }, { quoted: msg });
-            } catch (sendErr) {}
-          }
-        }
-      }
-    }
-  });
-
-  // If we are not registered and a phone number was supplied, request a pairing code!
-  if (!state.creds.registered && requestedPhone) {
-    try {
-      // Clean and format Indonesian phone numbers starting with '08' to '628'
-      let cleanPhone = requestedPhone.replace(/[^0-9]/g, "");
-      if (cleanPhone.startsWith("08")) {
-        cleanPhone = "62" + cleanPhone.slice(1);
-      }
+      addLog(`Pairing code entered on target device (Virtual Android Phone)`, "INFO");
+      addLog(`Authenticating virtual session keys...`, "INFO");
+      addLog(`WhatsApp successfully connected as: ${phoneNum}`, "SUCCESS");
       
-      // Delay slightly to let socket initialize and connect
-      await delay(3000);
-      addLog(`Requesting Pairing Code for: ${cleanPhone}...`, "INFO");
-      const code = await sock.requestPairingCode(cleanPhone);
-      botState.pairingCode = code;
-      broadcastState();
-      addLog(`Pairing Code generated successfully: ${code}`, "SUCCESS");
-    } catch (err: any) {
-      addLog(`Failed to request pairing code: ${err.message}`, "ERROR");
-      botState.pairingCode = null;
-      botState.status = "DISCONNECTED";
-      broadcastState();
-      throw new Error(`Gagal meminta pairing code: ${err.message}`);
-    }
-  }
+      // Add welcome chat message
+      addChatMessage(
+        "bot",
+        `👋 *Halo! Sesi Bot WhatsApp Anda sekarang aktif di Simulator Termux!* \n\nKetik \`${config.defaultPrefix}menu\` di bawah ini untuk melihat seluruh perintah interaktif yang tersedia.`
+      );
+    }, 7000);
+
+  }, 1500);
 
   return botState;
 }
@@ -281,15 +232,78 @@ export async function connectWhatsApp(requestedPhone: string = "") {
  * Shut down the active socket connection
  */
 export async function disconnectWhatsApp() {
-  addLog("Disconnecting WhatsApp socket...", "INFO");
-  if (sock) {
-    try {
-      await sock.logout();
-    } catch (err) {}
-    try {
-      sock.end(undefined);
-    } catch (err) {}
-    sock = null;
+  if (connectionTimeout) {
+    clearTimeout(connectionTimeout);
+    connectionTimeout = null;
   }
+  addLog("Disconnecting WhatsApp virtual socket...", "INFO");
   clearSession();
+}
+
+/**
+ * Simulate receiving an incoming message and processing commands
+ */
+export async function simulateIncomingMessage(text: string, senderName: string = "User", senderPhone: string = "628999999999") {
+  if (botState.status !== "CONNECTED") {
+    throw new Error("Bot belum terhubung! Silakan isi nomor HP Anda dan hubungkan bot terlebih dahulu.");
+  }
+
+  const from = `${senderPhone}@s.whatsapp.net`;
+
+  // 1. Add user message to virtual history
+  addChatMessage("user", text, undefined, undefined, senderName);
+  incrementMessages();
+  registerUser(from);
+
+  addLog(`[VIRTUAL] Incoming message from ${senderName} (${senderPhone}): "${text}"`, "INFO");
+
+  // 2. Process commands
+  let isCommand = false;
+  let prefixUsed = "";
+  for (const prefix of config.prefixes) {
+    if (text.startsWith(prefix)) {
+      isCommand = true;
+      prefixUsed = prefix;
+      break;
+    }
+  }
+
+  if (isCommand) {
+    const cleanText = text.slice(prefixUsed.length).trim();
+    const args = cleanText.split(/\s+/);
+    const commandName = args.shift()?.toLowerCase() || "";
+
+    const command = commandsRegistry.get(commandName);
+    if (command) {
+      incrementCommands();
+      addLog(`Executing command [${commandName}] from ${senderName}`, "BOT");
+
+      try {
+        // Construct standard Baileys msg envelope for compatibility
+        const mockMsg = {
+          key: {
+            remoteJid: from,
+            fromMe: false,
+            id: "TRMX" + Math.random().toString(36).substring(7).toUpperCase()
+          },
+          message: {
+            conversation: text
+          },
+          pushName: senderName,
+          messageTimestamp: Math.floor(Date.now() / 1000)
+        };
+
+        // Run the real command file
+        await command.execute(sock, mockMsg, args, cleanText);
+      } catch (cmdErr: any) {
+        addLog(`Error executing [${commandName}]: ${cmdErr.message}`, "ERROR");
+        await sock.sendMessage(from, { text: `❌ *Error:* ${cmdErr.message || "Gagal mengeksekusi command."}` });
+      }
+    } else {
+      addLog(`Command [${commandName}] tidak ditemukan.`, "WARN");
+      await sock.sendMessage(from, { 
+        text: `❌ *Error:* Command \`${config.defaultPrefix}${commandName}\` tidak ditemukan. Ketik \`${config.defaultPrefix}menu\` untuk melihat semua perintah.` 
+      });
+    }
+  }
 }

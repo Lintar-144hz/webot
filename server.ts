@@ -58,6 +58,17 @@ async function startServer() {
   // Socket connection handler
   io.on("connection", (socket) => {
     addLog(`Dashboard client connected: ${socket.id}`, "INFO");
+
+    // Handle incoming messages from lightweight external/Termux clients
+    socket.on("termux-message", async (data: { text: string; senderName?: string; senderPhone?: string }) => {
+      try {
+        const { text, senderName, senderPhone } = data;
+        const { simulateIncomingMessage } = await import("./lib/waClient.js");
+        await simulateIncomingMessage(text, senderName || "Termux User", senderPhone || "628999999999");
+      } catch (err: any) {
+        socket.emit("termux-error", { message: err.message || "Failed to process message" });
+      }
+    });
     
     socket.on("disconnect", () => {
       addLog(`Dashboard client disconnected: ${socket.id}`, "INFO");
@@ -70,7 +81,7 @@ async function startServer() {
 
     // Auto-connect WhatsApp if session exists
     const sessionDir = path.join(process.cwd(), "session");
-    if (fs.existsSync(path.join(sessionDir, "creds.json"))) {
+    if (fs.existsSync(path.join(sessionDir, "config.json"))) {
       addLog("Existing session found. Auto-reconnecting to WhatsApp...", "INFO");
       try {
         await connectWhatsApp();

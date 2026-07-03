@@ -116,9 +116,9 @@ export function importSessionBackup(backupJSON: string): boolean {
       throw new Error("Invalid backup format: Must be a JSON object");
     }
     
-    // Ensure creds.json exists in the backup to be valid
-    if (!backup["creds.json"]) {
-      throw new Error("Invalid session backup: Missing creds.json");
+    // Ensure config.json exists in the backup to be valid
+    if (!backup["config.json"]) {
+      throw new Error("Invalid session backup: Missing config.json");
     }
     
     // Ensure config dir exists and write backup file

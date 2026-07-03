@@ -59,7 +59,17 @@ interface CommandInfo {
   usage: string;
 }
 
-type TabType = "dashboard" | "commands" | "logs" | "tiktok" | "localhost" | "ai_test";
+type TabType = "dashboard" | "commands" | "logs" | "tiktok" | "localhost" | "ai_test" | "chat_simulator";
+
+interface ChatMessage {
+  id: string;
+  sender: "user" | "bot";
+  text: string;
+  timestamp: number;
+  pushName?: string;
+  mediaType?: "image" | "video" | "contact";
+  mediaUrl?: string;
+}
 
 export default function App() {
   const [botState, setBotState] = useState<BotState>({
@@ -109,6 +119,13 @@ export default function App() {
   const [importJSONText, setImportJSONText] = useState("");
 
   const logsEndRef = useRef<HTMLDivElement>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+
+  const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatSenderName, setChatSenderName] = useState("User Termux");
+  const [chatSenderPhone, setChatSenderPhone] = useState("628999999999");
+  const [chatLoading, setChatLoading] = useState(false);
 
   // Show Toast helper
   const showToast = (message: string, type: "success" | "error" | "info" = "info") => {
@@ -120,12 +137,13 @@ export default function App() {
     // 1. Fetch initial status, stats, logs, and commands
     const fetchInitialData = async () => {
       try {
-        const [stateRes, statsRes, logsRes, cmdRes, backupStatusRes] = await Promise.all([
+        const [stateRes, statsRes, logsRes, cmdRes, backupStatusRes, chatRes] = await Promise.all([
           fetch("/api/status").then(r => r.json()),
           fetch("/api/stats").then(r => r.json()),
           fetch("/api/logs").then(r => r.json()),
           fetch("/api/commands").then(r => r.json()),
-          fetch("/api/session/backup-status").then(r => r.json()).catch(() => ({ hasBackup: false }))
+          fetch("/api/session/backup-status").then(r => r.json()).catch(() => ({ hasBackup: false })),
+          fetch("/api/chat-history").then(r => r.json()).catch(() => ({ chat: [] }))
         ]);
         
         setBotState(stateRes);
@@ -133,6 +151,7 @@ export default function App() {
         setLogs(logsRes.logs || []);
         setCommands(cmdRes || []);
         setHasBackup(backupStatusRes.hasBackup || false);
+        setChatHistory(chatRes.chat || []);
       } catch (err) {
         console.error("Gagal memuat data awal server:", err);
       } finally {
@@ -149,6 +168,10 @@ export default function App() {
       if (newState.status === "CONNECTED") {
         showToast("WhatsApp Berhasil Terhubung!", "success");
       }
+    });
+
+    socket.on("new-chat-message", (newMsg: ChatMessage) => {
+      setChatHistory(prev => [...prev, newMsg]);
     });
 
     socket.on("new-log", (newLog: string) => {
@@ -406,6 +429,49 @@ export default function App() {
     }
   };
 
+  // Chat Simulator message sender handler
+  const handleSendChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || chatLoading) return;
+
+    if (botState.status !== "CONNECTED") {
+      showToast("Bot harus terhubung (ONLINE) sebelum Anda dapat mengirim pesan simulasi.", "error");
+      return;
+    }
+
+    const textToSend = chatInput.trim();
+    setChatInput("");
+    setChatLoading(true);
+
+    try {
+      const res = await fetch("/api/simulate-message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: textToSend,
+          senderName: chatSenderName.trim() || "User",
+          senderPhone: chatSenderPhone.trim() || "628999999999"
+        })
+      });
+
+      if (!res.ok) {
+        const errData = await res.json();
+        showToast(errData.error || "Gagal memproses pesan simulasi", "error");
+      }
+    } catch (err) {
+      showToast("Gagal terhubung ke API Simulator.", "error");
+    } finally {
+      setChatLoading(false);
+    }
+  };
+
+  // Scroll chat simulator to bottom
+  useEffect(() => {
+    if (activeTab === "chat_simulator" && chatEndRef.current) {
+      chatEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [chatHistory, activeTab]);
+
   // Helper file drop for Import
   const handleFileDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
@@ -526,6 +592,18 @@ export default function App() {
           <span className="text-[9px] font-bold text-zinc-600 block px-4 py-2 uppercase tracking-widest mt-4">Tools & AI</span>
 
           <button
+            onClick={() => setActiveTab("chat_simulator")}
+            className={`w-full flex items-center gap-3 px-4 py-2 rounded text-xs font-bold tracking-wide transition-all ${
+              activeTab === "chat_simulator"
+                ? "bg-emerald-500/5 text-emerald-400 border border-emerald-500/15"
+                : "text-zinc-500 hover:text-emerald-400/80 hover:bg-zinc-900/30"
+            }`}
+          >
+            <MessageSquare className="w-4 h-4 text-emerald-400" />
+            Chat Simulator
+          </button>
+
+          <button
             onClick={() => setActiveTab("ai_test")}
             className={`w-full flex items-center gap-3 px-4 py-2 rounded text-xs font-bold tracking-wide transition-all ${
               activeTab === "ai_test"
@@ -622,6 +700,12 @@ export default function App() {
               >
                 TikTok
               </button>
+              <button 
+                onClick={() => setActiveTab("chat_simulator")}
+                className={`px-2 py-1 rounded border ${activeTab === "chat_simulator" ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" : "border-transparent text-zinc-500"}`}
+              >
+                Chat Sim
+              </button>
             </div>
 
             <h1 className="text-xs font-bold tracking-widest text-emerald-400 uppercase hidden md:inline drop-shadow-[0_0_5px_rgba(52,211,153,0.2)]">
@@ -631,6 +715,7 @@ export default function App() {
               {activeTab === "tiktok" && ":: TIKTOK_LOOKUP_UTILITY ::"}
               {activeTab === "localhost" && ":: HOST_EXPLANATION ::"}
               {activeTab === "ai_test" && ":: PLAYGROUND_GEMINI_AI ::"}
+              {activeTab === "chat_simulator" && ":: VIRTUAL_CHAT_SIMULATOR ::"}
             </h1>
           </div>
 
@@ -1309,6 +1394,241 @@ export default function App() {
                     </div>
 
                   </div>
+                </div>
+
+              </div>
+            </div>
+          )}
+
+          {/* 7. VIEW TAB: CHAT SIMULATOR */}
+          {activeTab === "chat_simulator" && (
+            <div className="space-y-6">
+              <div className="border-b border-emerald-500/10 pb-4">
+                <h3 className="text-xs font-bold text-white uppercase tracking-wider">Virtual WhatsApp Chat Simulator</h3>
+                <p className="text-[10px] text-zinc-500 mt-1">
+                  Kirim pesan simulasi ke WhatsApp bot Anda langsung dari sini! Anda dapat menguji seluruh command bot (seperti `.menu`, `.ping`, `.owner`, atau `.tiktok`) tanpa memerlukan scan QR/pairing HP fisik.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                
+                {/* Left config/shortcut panel (4 columns) */}
+                <div className="lg:col-span-4 bg-[#09090d] border border-emerald-500/10 rounded-lg p-6 space-y-6">
+                  <div>
+                    <h4 className="text-[10px] font-bold text-white uppercase tracking-widest border-b border-zinc-900 pb-2 flex items-center gap-2">
+                      <Sliders className="w-3.5 h-3.5 text-emerald-400" />
+                      Simulator Settings
+                    </h4>
+                    
+                    <div className="space-y-4 mt-4">
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block">Sender Name (PushName)</label>
+                        <input 
+                          type="text"
+                          value={chatSenderName}
+                          onChange={(e) => setChatSenderName(e.target.value)}
+                          placeholder="User Termux"
+                          className="w-full bg-zinc-950 border border-emerald-500/15 rounded px-3 py-1.5 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-500 transition-all"
+                        />
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <label className="text-[9px] font-bold text-zinc-500 uppercase tracking-widest block">Sender Phone JID</label>
+                        <input 
+                          type="text"
+                          value={chatSenderPhone}
+                          onChange={(e) => setChatSenderPhone(e.target.value)}
+                          placeholder="628999999999"
+                          className="w-full bg-zinc-950 border border-emerald-500/15 rounded px-3 py-1.5 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-500 transition-all"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <div>
+                    <h4 className="text-[10px] font-bold text-white uppercase tracking-widest border-b border-zinc-900 pb-2 flex items-center gap-2">
+                      <BookOpen className="w-3.5 h-3.5 text-emerald-400" />
+                      Quick Command Shortcuts
+                    </h4>
+                    <p className="text-[9px] text-zinc-500 mt-1 leading-relaxed">Klik perintah di bawah untuk langsung menyalin ke kotak pesan:</p>
+                    
+                    <div className="grid grid-cols-2 gap-2 mt-3 font-mono">
+                      <button 
+                        onClick={() => setChatInput(".menu")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate cursor-pointer"
+                      >
+                        ⚡ .menu
+                      </button>
+                      <button 
+                        onClick={() => setChatInput(".ping")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate cursor-pointer"
+                      >
+                        ⚡ .ping
+                      </button>
+                      <button 
+                        onClick={() => setChatInput(".owner")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate cursor-pointer"
+                      >
+                        ⚡ .owner
+                      </button>
+                      <button 
+                        onClick={() => setChatInput(".button")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate cursor-pointer"
+                      >
+                        ⚡ .button
+                      </button>
+                      <button 
+                        onClick={() => setChatInput(".tt fuji_an")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate cursor-pointer col-span-2"
+                      >
+                        ⚡ .tt &lt;username&gt;
+                      </button>
+                      <button 
+                        onClick={() => setChatInput(".tiktok https://www.tiktok.com/@gibran_rakabuming/video/7339798418047978757")}
+                        className="py-1.5 px-2 bg-zinc-950 hover:bg-[#0c2214] hover:text-emerald-400 border border-emerald-500/10 text-[10px] font-bold text-zinc-400 rounded transition-all text-left truncate col-span-2 cursor-pointer"
+                      >
+                        ⚡ .tiktok &lt;url&gt;
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded bg-zinc-950/40 border border-emerald-500/5 text-[9px] text-zinc-500 leading-relaxed space-y-1 font-mono">
+                    <span className="font-bold text-zinc-400 block uppercase">💡 CARA PENGGUNAAN</span>
+                    <p>• Nyalakan bot terlebih dahulu di Dashboard utama (ONLINE).</p>
+                    <p>• Ketik perintah dengan prefix titik (.) seperti <code className="text-emerald-400">.menu</code></p>
+                    <p>• Pesan balasan dikirimkan secara otomatis oleh command handler bot yang sesungguhnya!</p>
+                  </div>
+
+                  <div className="p-4 rounded bg-emerald-500/5 border border-emerald-500/15 text-[9px] text-emerald-400/90 leading-relaxed space-y-2 font-mono">
+                    <span className="font-bold text-white block uppercase flex items-center gap-1.5">
+                      <Terminal className="w-3.5 h-3.5 text-emerald-400" />
+                      🔌 TERMUX BOT BRIDGE
+                    </span>
+                    <p>Mendukung koneksi Termux eksternal tanpa Baileys/Sharp native yang berat!</p>
+                    <ol className="list-decimal pl-3 space-y-1 text-zinc-400">
+                      <li>Pastikan Node.js terinstall di Termux (<code className="text-emerald-400">pkg install nodejs</code>).</li>
+                      <li>Jalankan bridge script: <code className="text-emerald-300">node termux-bridge.js</code></li>
+                      <li>Koneksi akan otomatis tersambung ke port 3000 WebSocket untuk mengontrol dan mengeksekusi bot command!</li>
+                    </ol>
+                  </div>
+                </div>
+
+                {/* Right chat window (8 columns) */}
+                <div className="lg:col-span-8 flex flex-col h-[550px] bg-black border border-emerald-500/10 rounded-lg overflow-hidden shadow-2xl">
+                  
+                  {/* Chat Box Header */}
+                  <div className="p-4 border-b border-zinc-900 bg-[#050507] flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="w-8 h-8 rounded-full bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 text-xs font-bold">
+                        W
+                      </div>
+                      <div>
+                        <span className="text-xs font-bold text-white block">WhatsApp Bot Daemon</span>
+                        <span className="text-[9px] text-emerald-400 flex items-center gap-1 font-semibold tracking-wider">
+                          <span className="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></span>
+                          ONLINE SIMULATOR
+                        </span>
+                      </div>
+                    </div>
+
+                    <span className="text-[9px] font-mono text-zinc-600">
+                      JID: {botState.phoneNumber || "62813371337"}@s.whatsapp.net
+                    </span>
+                  </div>
+
+                  {/* Message scrollable container */}
+                  <div className="flex-1 p-4 overflow-y-auto space-y-4 bg-zinc-950/20 scrollbar-thin flex flex-col">
+                    {chatHistory.length === 0 ? (
+                      <div className="flex-1 flex flex-col items-center justify-center text-center p-10 text-zinc-600 space-y-2">
+                        <MessageSquare className="w-8 h-8 text-zinc-800" />
+                        <p className="text-xs uppercase tracking-wider font-bold">Belum ada aktivitas chat simulator</p>
+                        <p className="text-[10px] max-w-sm lowercase leading-relaxed">
+                          kirim pesan pertama kamu di bawah (contoh: <code className="text-zinc-400 font-bold">.menu</code> atau <code className="text-zinc-400 font-bold">.ping</code>) untuk melihat respon cerdas bot.
+                        </p>
+                      </div>
+                    ) : (
+                      chatHistory.map((msg) => (
+                        <div 
+                          key={msg.id}
+                          className={`flex flex-col max-w-[85%] ${
+                            msg.sender === "user" ? "self-end items-end" : "self-start items-start"
+                          }`}
+                        >
+                          {/* Sender label */}
+                          <span className="text-[8px] text-zinc-500 font-bold mb-1 uppercase tracking-wider px-1">
+                            {msg.sender === "user" ? `${msg.pushName} (User)` : "Bot WhatsApp (System)"}
+                          </span>
+
+                          {/* Message bubble */}
+                          <div className={`p-3 rounded-lg border text-xs whitespace-pre-wrap leading-relaxed select-text font-mono ${
+                            msg.sender === "user" 
+                              ? "bg-zinc-950 text-emerald-400 border-emerald-500/20 rounded-tr-none shadow-[0_0_8px_rgba(16,185,129,0.02)]" 
+                              : "bg-[#09090d] text-zinc-200 border-zinc-900 rounded-tl-none"
+                          }`}>
+                            {msg.text}
+
+                            {/* Render media content previews */}
+                            {msg.mediaType && msg.mediaUrl && (
+                              <div className="mt-3 p-2 bg-black/40 rounded border border-zinc-900 space-y-2">
+                                <span className="text-[9px] text-zinc-500 font-bold block uppercase tracking-wider">
+                                  📁 MEDIA RECEIVED ({msg.mediaType})
+                                </span>
+                                {msg.mediaType === "image" && (
+                                  <img 
+                                    src={msg.mediaUrl} 
+                                    alt="Simulated Media" 
+                                    className="max-h-40 rounded border border-zinc-800 object-cover mx-auto"
+                                    referrerPolicy="no-referrer"
+                                  />
+                                )}
+                                {msg.mediaType === "video" && (
+                                  <div className="text-[10px] font-mono text-amber-500 bg-amber-500/5 p-2 rounded border border-amber-500/10">
+                                    🎥 Simulated Video Playback: <a href={msg.mediaUrl} target="_blank" rel="noreferrer" className="underline font-bold text-emerald-400 break-all">{msg.mediaUrl}</a>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+                          </div>
+
+                          {/* Time label */}
+                          <span className="text-[7px] text-zinc-600 font-mono mt-0.5 px-1">
+                            {new Date(msg.timestamp).toLocaleTimeString()}
+                          </span>
+                        </div>
+                      ))
+                    )}
+                    <div ref={chatEndRef} />
+                  </div>
+
+                  {/* Input form footer */}
+                  <form onSubmit={handleSendChatMessage} className="p-4 border-t border-zinc-900 bg-[#050507] flex gap-2 items-center">
+                    <input 
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      disabled={botState.status !== "CONNECTED" || chatLoading}
+                      placeholder={
+                        botState.status === "CONNECTED" 
+                          ? "Ketik pesan simulasi di sini... (contoh: .menu, .ping)" 
+                          : "Silakan hubungkan bot terlebih dahulu di tab Dashboard (OFFLINE)"
+                      }
+                      className="flex-1 bg-zinc-950 border border-emerald-500/10 rounded px-4 py-2.5 text-xs font-mono text-emerald-400 outline-none focus:border-emerald-500 transition-all placeholder-zinc-800 disabled:opacity-50"
+                    />
+
+                    <button
+                      type="submit"
+                      disabled={!chatInput.trim() || botState.status !== "CONNECTED" || chatLoading}
+                      className="px-4 py-2.5 bg-emerald-500 hover:bg-emerald-600 disabled:bg-[#0c2214] disabled:text-emerald-800 font-bold text-xs rounded transition-all flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      {chatLoading ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
+                      Kirim
+                    </button>
+                  </form>
+
                 </div>
 
               </div>

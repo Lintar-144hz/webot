@@ -1,6 +1,15 @@
-import fs from "fs";
-import path from "path";
 import { addLog } from "../utils/logger.js";
+
+// Static imports of commands
+import aiCommand from "../commands/ai.js";
+import bratCommand from "../commands/brat.js";
+import buttonCommand from "../commands/button.js";
+import menuCommand from "../commands/menu.js";
+import ownerCommand from "../commands/owner.js";
+import pingCommand from "../commands/ping.js";
+import stickerCommand from "../commands/sticker.js";
+import tiktokCommand from "../commands/tiktok.js";
+import ttCommand from "../commands/tt.js";
 
 export interface Command {
   name: string;
@@ -13,52 +22,40 @@ export interface Command {
 
 export const commandsRegistry = new Map<string, Command>();
 
+const commandsList = [
+  aiCommand,
+  bratCommand,
+  buttonCommand,
+  menuCommand,
+  ownerCommand,
+  pingCommand,
+  stickerCommand,
+  tiktokCommand,
+  ttCommand
+];
+
 /**
- * Dynamically load all commands from the commands/ directory
+ * Register all statically imported commands
  */
 export async function loadCommands() {
   commandsRegistry.clear();
-  const commandsDir = path.join(process.cwd(), "commands");
-
-  if (!fs.existsSync(commandsDir)) {
-    fs.mkdirSync(commandsDir, { recursive: true });
-    addLog("Created commands/ directory", "INFO");
-    return;
-  }
-
-  try {
-    const files = fs.readdirSync(commandsDir).filter(file => file.endsWith(".ts") || file.endsWith(".js"));
-    
-    for (const file of files) {
-      const filePath = path.join(commandsDir, file);
-      // Generate a file:// URL for ES dynamic import to work on Windows and Linux
-      const fileUrl = `file://${filePath}`;
+  
+  for (const command of commandsList) {
+    if (command && command.name && typeof command.execute === "function") {
+      commandsRegistry.set(command.name.toLowerCase(), command);
       
-      try {
-        const module = await import(fileUrl);
-        const command: Command = module.default || module;
-        
-        if (command && command.name && typeof command.execute === "function") {
-          commandsRegistry.set(command.name.toLowerCase(), command);
-          
-          if (command.aliases) {
-            for (const alias of command.aliases) {
-              commandsRegistry.set(alias.toLowerCase(), command);
-            }
-          }
-          addLog(`Loaded command: ${command.name}`, "SUCCESS");
-        } else {
-          addLog(`Failed to load command in ${file}: Missing name or execute method`, "WARN");
+      if (command.aliases) {
+        for (const alias of command.aliases) {
+          commandsRegistry.set(alias.toLowerCase(), command);
         }
-      } catch (err: any) {
-        addLog(`Error importing command ${file}: ${err.message}`, "ERROR");
       }
+      addLog(`Loaded command: ${command.name}`, "SUCCESS");
+    } else {
+      addLog(`Failed to load command: Missing name or execute method`, "WARN");
     }
-    
-    addLog(`Total commands registered: ${commandsRegistry.size}`, "INFO");
-  } catch (err: any) {
-    addLog(`Failed to scan commands directory: ${err.message}`, "ERROR");
   }
+  
+  addLog(`Total commands registered: ${commandsRegistry.size}`, "INFO");
 }
 
 /**

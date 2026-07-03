@@ -1,9 +1,14 @@
-import makeWASocket, {
+import baileysPkg, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   delay
 } from "@whiskeysockets/baileys";
+
+// Get makeWASocket robustly to support both ESM default and CommonJS interop wrapper formats
+const makeWASocket = (typeof baileysPkg === "function" 
+  ? baileysPkg 
+  : (baileysPkg as any).default || (baileysPkg as any).makeWASocket || baileysPkg) as any;
 import path from "path";
 import fs from "fs";
 import pino from "pino";

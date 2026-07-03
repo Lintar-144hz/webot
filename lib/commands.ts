@@ -1,7 +1,6 @@
 import { addLog } from "../utils/logger.js";
 
 // Static imports of commands
-import aiCommand from "../commands/ai.js";
 import bratCommand from "../commands/brat.js";
 import buttonCommand from "../commands/button.js";
 import menuCommand from "../commands/menu.js";
@@ -23,7 +22,6 @@ export interface Command {
 export const commandsRegistry = new Map<string, Command>();
 
 const commandsList = [
-  aiCommand,
   bratCommand,
   buttonCommand,
   menuCommand,

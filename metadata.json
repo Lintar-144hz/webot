@@ -1,0 +1,6 @@
+{
+  "name": "WhatsApp Bot Dashboard",
+  "description": "Modern WhatsApp Bot with clean dark mode dashboard, modular command structure, and real-time logs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

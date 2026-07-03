@@ -179,7 +179,7 @@ router.post("/session/import", async (req, res) => {
       res.status(500).json({ error: `Cadangan berhasil diimport tetapi gagal menghubungkan bot: ${err.message}` });
     }
   } else {
-    res.status(400).json({ error: "Gagal mengimport data cadangan. Format JSON tidak sesuai atau creds.json tidak ditemukan." });
+    res.status(400).json({ error: "Gagal mengimport data cadangan. Format JSON tidak sesuai atau config.json tidak ditemukan." });
   }
 });
 

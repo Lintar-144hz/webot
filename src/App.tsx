@@ -1880,7 +1880,7 @@ export default function App() {
                   rows={6}
                   value={importJSONText}
                   onChange={(e) => setImportJSONText(e.target.value)}
-                  placeholder='{"creds.json": "...", ...}'
+                  placeholder='{"config.json": "...", ...}'
                   className="w-full bg-zinc-950 border border-emerald-500/15 rounded p-3 text-[10px] font-mono text-emerald-400 outline-none focus:border-emerald-500 transition-all placeholder-zinc-850 resize-none leading-relaxed"
                 />
               </div>
